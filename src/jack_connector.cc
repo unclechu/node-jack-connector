@@ -58,7 +58,7 @@ bool check_port_exists(char *check_port_name, unsigned long flags);
  * @public
  * @returns {v8::String} version
  * @example
- *   var jackConnector = require('../build/Release/jack_connector');
+ *   var jackConnector = require('jack-connector');
  *   console.log(jackConnector.getVersion());
  *     // string of version, see VERSION macros
  */
@@ -74,7 +74,7 @@ Handle<Value> getVersion(const Arguments &args)
  * @public
  * @returns {v8::Boolean} result True - JACK-client is opened, false - JACK-client is closed
  * @example
- *   var jackConnector = require('../build/Release/jack_connector');
+ *   var jackConnector = require('jack-connector');
  *   console.log(jackConnector.checkClientOpenedSync());
  *     // true if client opened or false if closed
  */
@@ -90,7 +90,7 @@ Handle<Value> checkClientOpenedSync(const Arguments &args)
  * @public
  * @param {v8::String} client_name JACK-client name
  * @example
- *   var jackConnector = require('../build/Release/jack_connector');
+ *   var jackConnector = require('jack-connector');
  *   jackConnector.openClientSync('JACK_connector');
  */
 Handle<Value> openClientSync(const Arguments &args)
@@ -129,7 +129,7 @@ Handle<Value> openClientSync(const Arguments &args)
  *
  * @public
  * @example
- *   var jackConnector = require('../build/Release/jack_connector');
+ *   var jackConnector = require('jack-connector');
  *   jackConnector.closeClientSync();
  */
 Handle<Value> closeClientSync(const Arguments &args)
@@ -151,7 +151,7 @@ Handle<Value> closeClientSync(const Arguments &args)
  * @param {v8::String} port_name Full port name
  * @param {v8::Integer} port_type See: enum jack_flags
  * @example
- *   var jackConnector = require('../build/Release/jack_connector');
+ *   var jackConnector = require('jack-connector');
  *   jackConnector.registerInPortSync('in_1');
  *   jackConnector.registerInPortSync('in_2');
  */
@@ -177,7 +177,7 @@ Handle<Value> registerInPortSync(const Arguments &args)
  * @public
  * @param {v8::String} port_name Full port name
  * @example
- *   var jackConnector = require('../build/Release/jack_connector');
+ *   var jackConnector = require('jack-connector');
  *   jackConnector.registerOutPortSync('out_1');
  *   jackConnector.registerOutPortSync('out_2');
  */
@@ -203,7 +203,7 @@ Handle<Value> registerOutPortSync(const Arguments &args)
  * @public
  * @param {v8::String} port_name Full port name
  * @example
- *   var jackConnector = require('../build/Release/jack_connector');
+ *   var jackConnector = require('jack-connector');
  *   jackConnector.unregisterPortSync('out_1', jackConnector.IsOutput);
  *   jackConnector.unregisterPortSync('out_2', jackConnector.IsOutput);
  */
@@ -247,7 +247,7 @@ Handle<Value> unregisterPortSync(const Arguments &args)
  *
  * @public
  * @example
- *   var jackConnector = require('../build/Release/jack_connector');
+ *   var jackConnector = require('jack-connector');
  *   if (jackConnector.checkActiveSync())
  *     console.log('JACK-client is active');
  *   else
@@ -271,7 +271,7 @@ Handle<Value> checkActiveSync(const Arguments &args)
  *
  * @public
  * @example
- *   var jackConnector = require('../build/Release/jack_connector');
+ *   var jackConnector = require('jack-connector');
  *   jackConnector.activateSync();
  */
 Handle<Value> activateSync(const Arguments &args)
@@ -293,7 +293,7 @@ Handle<Value> activateSync(const Arguments &args)
  *
  * @public
  * @example
- *   var jackConnector = require('../build/Release/jack_connector');
+ *   var jackConnector = require('jack-connector');
  *   jackConnector.deactivateSync();
  */
 Handle<Value> deactivateSync(const Arguments &args)
@@ -317,7 +317,7 @@ Handle<Value> deactivateSync(const Arguments &args)
  * @param {v8::String} sourcePort Full name of source port
  * @param {v8::String} destinationPort Full name of destination port
  * @example
- *   var jackConnector = require('../build/Release/jack_connector');
+ *   var jackConnector = require('jack-connector');
  *   jackConnector.connectPortSync('system:capture_1', 'system:playback_1');
  */
 Handle<Value> connectPortSync(const Arguments &args)
@@ -353,7 +353,7 @@ Handle<Value> connectPortSync(const Arguments &args)
  * @param {v8::String} sourcePort Full name of source port
  * @param {v8::String} destinationPort Full name of destination port
  * @example
- *   var jackConnector = require('../build/Release/jack_connector');
+ *   var jackConnector = require('jack-connector');
  *   jackConnector.disconnectPortSync('system:capture_1', 'system:playback_1');
  */
 Handle<Value> disconnectPortSync(const Arguments &args)
@@ -386,7 +386,7 @@ Handle<Value> disconnectPortSync(const Arguments &args)
  * @param {v8::Boolean} [withOwn] Default: true
  * @returns {v8::Array} allPortsList Array of full ports names strings
  * @example
- *   var jackConnector = require('../build/Release/jack_connector');
+ *   var jackConnector = require('jack-connector');
  *   console.log(jackConnector.getAllPortsSync());
  *     // prints: [ "system:playback_1", "system:playback_2",
  *     //           "system:capture_1", "system:capture_2" ]
@@ -413,7 +413,7 @@ Handle<Value> getAllPortsSync(const Arguments &args)
  * @param {v8::Boolean} [withOwn] Default: true
  * @returns {v8::Array} outPortsList Array of full ports names strings
  * @example
- *   var jackConnector = require('../build/Release/jack_connector');
+ *   var jackConnector = require('jack-connector');
  *   console.log(jackConnector.getOutPortsSync());
  *     // prints: [ "system:capture_1", "system:capture_2" ]
  */
@@ -439,7 +439,7 @@ Handle<Value> getOutPortsSync(const Arguments &args)
  * @param {v8::Boolean} [withOwn] Default: true
  * @returns {v8::Array} inPortsList Array of full ports names strings
  * @example
- *   var jackConnector = require('../build/Release/jack_connector');
+ *   var jackConnector = require('jack-connector');
  *   console.log(jackConnector.getInPortsSync());
  *     // prints: [ "system:playback_1", "system:playback_2" ]
  */
@@ -464,7 +464,7 @@ Handle<Value> getInPortsSync(const Arguments &args)
  * @public
  * @param {v8::String} checkPortName Full port name to check for exists
  * @example
- *   var jackConnector = require('../build/Release/jack_connector');
+ *   var jackConnector = require('jack-connector');
  *   console.log(jackConnector.portExistsSync('system:playback_1'));
  *     // true
  *   console.log(jackConnector.portExistsSync('nowhere:never'));
@@ -487,7 +487,7 @@ Handle<Value> portExistsSync(const Arguments &args)
  * @public
  * @param {v8::String} checkPortName Full port name to check for exists
  * @example
- *   var jackConnector = require('../build/Release/jack_connector');
+ *   var jackConnector = require('jack-connector');
  *   console.log(jackConnector.outPortExistsSync('system:playback_1'));
  *     // false
  *   console.log(jackConnector.outPortExistsSync('system:capture_1'));
@@ -510,7 +510,7 @@ Handle<Value> outPortExistsSync(const Arguments &args)
  * @public
  * @param {v8::String} checkPortName Full port name to check for exists
  * @example
- *   var jackConnector = require('../build/Release/jack_connector');
+ *   var jackConnector = require('jack-connector');
  *   console.log(jackConnector.inPortExistsSync('system:playback_1'));
  *     // true
  *   console.log(jackConnector.inPortExistsSync('system:capture_1'));
