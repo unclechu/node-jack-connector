@@ -1,0 +1,39 @@
+{
+    "name": "jack-connector",
+    "description": "Bindings JACK-Audio-Connection-Kit for Node.JS",
+    "version": "0.1",
+    "keywords": [
+        "jack",
+        "jackd",
+        "jack audio",
+        "binding"
+    ],
+    "authors": [
+        {
+            "name": "Viacheslav Lotsmanov",
+            "nickname": "unclechu",
+            "email": "lotsmanov89@gmail.com",
+            "url": "http://unclechumind.blogspot.com"
+        }
+    ],
+    "email": "lotsmanov89@gmail.com",
+    "license": "MIT",
+    "main": "build/Release/jack_connector.node",
+    "homepage": "http://github.com/unclechu/node-jack-connector",
+    "engines": {
+        "node": ">=0.9.0"
+    },
+    "scripts": {
+        "preinstall": "node-gyp rebuild"
+    },
+    "repository": {
+        "type": "git",
+        "url": "http://github.com/unclechu/node-jack-connector.git"
+    },
+    "bugs": {
+        "url": "http://github.com/unclechu/node-jack-connector/issues"
+    },
+    "directories": {
+        "src": "./src"
+    }
+}
