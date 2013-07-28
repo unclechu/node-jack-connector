@@ -17,7 +17,7 @@ jackConnector.openClientSync('JACK_connector_client_name');
 jackConnector.activateSync();
 jackConnector.registerOutPortSync('output');
 jackConnector.registerInPortSync('input');
-function mainLoop() {
-    process.nextTick(function () { mainLoop(); });
-}
+(function mainLoop() {
+    setTimeout(function () { mainLoop(); }, 10);
+})();
 ```
