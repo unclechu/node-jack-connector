@@ -28,7 +28,7 @@
  * THE SOFTWARE.
  */
 
-#define VERSION "0.1.1"
+#define VERSION "0.1.2"
 
 #include <node.h>
 #include <jack/jack.h>
@@ -91,7 +91,7 @@ Handle<Value> checkClientOpenedSync(const Arguments &args)
  * @param {v8::String} client_name JACK-client name
  * @example
  *   var jackConnector = require('jack-connector');
- *   jackConnector.openClientSync('JACK_connector');
+ *   jackConnector.openClientSync('JACK_connector_client_name');
  */
 Handle<Value> openClientSync(const Arguments &args)
 {
@@ -130,6 +130,7 @@ Handle<Value> openClientSync(const Arguments &args)
  * @public
  * @example
  *   var jackConnector = require('jack-connector');
+ *   jackConnector.openClientSync('JACK_connector_client_name');
  *   jackConnector.closeClientSync();
  */
 Handle<Value> closeClientSync(const Arguments &args)
@@ -152,6 +153,7 @@ Handle<Value> closeClientSync(const Arguments &args)
  * @param {v8::Integer} port_type See: enum jack_flags
  * @example
  *   var jackConnector = require('jack-connector');
+ *   jackConnector.openClientSync('JACK_connector_client_name');
  *   jackConnector.registerInPortSync('in_1');
  *   jackConnector.registerInPortSync('in_2');
  */
@@ -178,6 +180,7 @@ Handle<Value> registerInPortSync(const Arguments &args)
  * @param {v8::String} port_name Full port name
  * @example
  *   var jackConnector = require('jack-connector');
+ *   jackConnector.openClientSync('JACK_connector_client_name');
  *   jackConnector.registerOutPortSync('out_1');
  *   jackConnector.registerOutPortSync('out_2');
  */
@@ -204,8 +207,11 @@ Handle<Value> registerOutPortSync(const Arguments &args)
  * @param {v8::String} port_name Full port name
  * @example
  *   var jackConnector = require('jack-connector');
- *   jackConnector.unregisterPortSync('out_1', jackConnector.IsOutput);
- *   jackConnector.unregisterPortSync('out_2', jackConnector.IsOutput);
+ *   jackConnector.openClientSync('JACK_connector_client_name');
+ *   jackConnector.registerOutPortSync('out_1');
+ *   jackConnector.registerOutPortSync('out_2');
+ *   jackConnector.unregisterPortSync('out_1');
+ *   jackConnector.unregisterPortSync('out_2');
  */
 Handle<Value> unregisterPortSync(const Arguments &args)
 {
@@ -272,6 +278,7 @@ Handle<Value> checkActiveSync(const Arguments &args)
  * @public
  * @example
  *   var jackConnector = require('jack-connector');
+ *   jackConnector.openClientSync('JACK_connector_client_name');
  *   jackConnector.activateSync();
  */
 Handle<Value> activateSync(const Arguments &args)
@@ -294,6 +301,8 @@ Handle<Value> activateSync(const Arguments &args)
  * @public
  * @example
  *   var jackConnector = require('jack-connector');
+ *   jackConnector.openClientSync('JACK_connector_client_name');
+ *   jackConnector.activateSync();
  *   jackConnector.deactivateSync();
  */
 Handle<Value> deactivateSync(const Arguments &args)
@@ -318,6 +327,8 @@ Handle<Value> deactivateSync(const Arguments &args)
  * @param {v8::String} destinationPort Full name of destination port
  * @example
  *   var jackConnector = require('jack-connector');
+ *   jackConnector.openClientSync('JACK_connector_client_name');
+ *   jackConnector.activateSync();
  *   jackConnector.connectPortSync('system:capture_1', 'system:playback_1');
  */
 Handle<Value> connectPortSync(const Arguments &args)
@@ -329,11 +340,11 @@ Handle<Value> connectPortSync(const Arguments &args)
 
     String::AsciiValue src_port_name(args[0]->ToString());
     jack_port_t *src_port = jack_port_by_name(client, *src_port_name);
-    if (!src_port) THROW_ERR("Non existing source port");
+    if (! src_port) THROW_ERR("Non existing source port");
 
     String::AsciiValue dst_port_name(args[1]->ToString());
     jack_port_t *dst_port = jack_port_by_name(client, *dst_port_name);
-    if (!dst_port) THROW_ERR("Non existing destination port");
+    if (! dst_port) THROW_ERR("Non existing destination port");
 
     if (! client_active
     && (jack_port_is_mine(client, src_port) || jack_port_is_mine(client, dst_port))) {
@@ -354,6 +365,8 @@ Handle<Value> connectPortSync(const Arguments &args)
  * @param {v8::String} destinationPort Full name of destination port
  * @example
  *   var jackConnector = require('jack-connector');
+ *   jackConnector.openClientSync('JACK_connector_client_name');
+ *   jackConnector.activateSync();
  *   jackConnector.disconnectPortSync('system:capture_1', 'system:playback_1');
  */
 Handle<Value> disconnectPortSync(const Arguments &args)
@@ -365,11 +378,11 @@ Handle<Value> disconnectPortSync(const Arguments &args)
 
     String::AsciiValue src_port_name(args[0]->ToString());
     jack_port_t *src_port = jack_port_by_name(client, *src_port_name);
-    if (!src_port) THROW_ERR("Non existing source port");
+    if (! src_port) THROW_ERR("Non existing source port");
 
     String::AsciiValue dst_port_name(args[1]->ToString());
     jack_port_t *dst_port = jack_port_by_name(client, *dst_port_name);
-    if (!dst_port) THROW_ERR("Non existing destination port");
+    if (! dst_port) THROW_ERR("Non existing destination port");
 
     if (check_port_connection(*src_port_name, *dst_port_name)) {
         if (jack_disconnect(client, *src_port_name, *dst_port_name))
@@ -387,6 +400,7 @@ Handle<Value> disconnectPortSync(const Arguments &args)
  * @returns {v8::Array} allPortsList Array of full ports names strings
  * @example
  *   var jackConnector = require('jack-connector');
+ *   jackConnector.openClientSync('JACK_connector_client_name');
  *   console.log(jackConnector.getAllPortsSync());
  *     // prints: [ "system:playback_1", "system:playback_2",
  *     //           "system:capture_1", "system:capture_2" ]
@@ -414,6 +428,7 @@ Handle<Value> getAllPortsSync(const Arguments &args)
  * @returns {v8::Array} outPortsList Array of full ports names strings
  * @example
  *   var jackConnector = require('jack-connector');
+ *   jackConnector.openClientSync('JACK_connector_client_name');
  *   console.log(jackConnector.getOutPortsSync());
  *     // prints: [ "system:capture_1", "system:capture_2" ]
  */
@@ -440,6 +455,7 @@ Handle<Value> getOutPortsSync(const Arguments &args)
  * @returns {v8::Array} inPortsList Array of full ports names strings
  * @example
  *   var jackConnector = require('jack-connector');
+ *   jackConnector.openClientSync('JACK_connector_client_name');
  *   console.log(jackConnector.getInPortsSync());
  *     // prints: [ "system:playback_1", "system:playback_2" ]
  */
@@ -465,6 +481,7 @@ Handle<Value> getInPortsSync(const Arguments &args)
  * @param {v8::String} checkPortName Full port name to check for exists
  * @example
  *   var jackConnector = require('jack-connector');
+ *   jackConnector.openClientSync('JACK_connector_client_name');
  *   console.log(jackConnector.portExistsSync('system:playback_1'));
  *     // true
  *   console.log(jackConnector.portExistsSync('nowhere:never'));
@@ -488,6 +505,7 @@ Handle<Value> portExistsSync(const Arguments &args)
  * @param {v8::String} checkPortName Full port name to check for exists
  * @example
  *   var jackConnector = require('jack-connector');
+ *   jackConnector.openClientSync('JACK_connector_client_name');
  *   console.log(jackConnector.outPortExistsSync('system:playback_1'));
  *     // false
  *   console.log(jackConnector.outPortExistsSync('system:capture_1'));
@@ -511,6 +529,7 @@ Handle<Value> outPortExistsSync(const Arguments &args)
  * @param {v8::String} checkPortName Full port name to check for exists
  * @example
  *   var jackConnector = require('jack-connector');
+ *   jackConnector.openClientSync('JACK_connector_client_name');
  *   console.log(jackConnector.inPortExistsSync('system:playback_1'));
  *     // true
  *   console.log(jackConnector.inPortExistsSync('system:capture_1'));

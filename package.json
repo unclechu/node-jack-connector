@@ -1,7 +1,7 @@
 {
     "name": "jack-connector",
     "description": "Bindings JACK-Audio-Connection-Kit for Node.JS",
-    "version": "0.1.1",
+    "version": "0.1.2",
     "keywords": [
         "jack",
         "jackd",
