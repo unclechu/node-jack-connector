@@ -14,9 +14,9 @@ libjack2, libjack2-devel
 ```javascript
 var jackConnector = require('jack-connector');
 jackConnector.openClientSync('JACK_connector_client_name');
-jackConnector.activateSync();
 jackConnector.registerOutPortSync('output');
 jackConnector.registerInPortSync('input');
+jackConnector.activateSync();
 (function mainLoop() {
     setTimeout(function () { mainLoop(); }, 10);
 })();
