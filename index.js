@@ -1,1 +1,1 @@
-modules.exports = require('./build/Release/jack_connector.node')
+module.exports = require('./build/Release/jack_connector.node')
