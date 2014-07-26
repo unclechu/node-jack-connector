@@ -978,6 +978,14 @@ int16_t get_own_out_port_index(char* short_port_name) // {{{1
 
 // processing {{{1
 
+#define UV_PROCESS_STOP() \
+        scope.Close(Undefined()); \
+        delete task; \
+        baton = NULL; \
+        uv_sem_post(&semaphore); \
+        return;
+
+// TODO fix throw errors
 void uv_process(uv_work_t* task, int status) // {{{2
 {
     HandleScope scope;
@@ -1008,11 +1016,11 @@ void uv_process(uv_work_t* task, int status) // {{{2
         processCallback->Call(Context::GetCurrent()->Global(), argc, argv);
 
     if (!retval->IsNull() && !retval->IsUndefined() && !retval->IsObject()) {
-        ThrowException(Exception::TypeError(String::New(
+        /*ThrowException(Exception::TypeError(String::New(
             "Returned value of \"process\" callback must be an object"
             " of port{String}:buffer{Array.<Number|Float>} values"
-            " or null or undefined")));
-        return;
+            " or null or undefined")));*/
+        UV_PROCESS_STOP();
     }
 
     if (retval->IsObject()) {
@@ -1021,10 +1029,10 @@ void uv_process(uv_work_t* task, int status) // {{{2
         for (uint16_t i=0; i<keys->Length(); i++) {
             Local<Value> key = keys->Get(i);
             if (!key->IsString()) {
-                ThrowException(Exception::TypeError(String::New(
+                /*ThrowException(Exception::TypeError(String::New(
                     "Incorrect key type in returned value of \"process\""
-                    " callback, must be a string (own port name)")));
-                return;
+                    " callback, must be a string (own port name)")));*/
+                UV_PROCESS_STOP();
             }
             String::AsciiValue port_name(key->ToString());
 
@@ -1034,43 +1042,40 @@ void uv_process(uv_work_t* task, int status) // {{{2
                 char err_msg[STR_SIZE + sizeof(err)];
                 sprintf(err_msg, err, *port_name);
                 ThrowException(Exception::Error(String::New(err_msg)));
-                return;
+                UV_PROCESS_STOP();
             }
 
             Local<Value> val = obj->Get(key);
             if (!val->IsArray()) {
-                ThrowException(Exception::Error(String::New(
+                /*ThrowException(Exception::TypeError(String::New(
                     "Incorrect buffer type of returned value of \"process\""
-                    " callback, must be an Array<Float|Number>")));
-                return;
+                    " callback, must be an Array<Float|Number>")));*/
+                UV_PROCESS_STOP();
             }
             Local<Array> buffer = val.As<Array>();
 
             if (buffer->Length() != nframes) {
-                ThrowException(Exception::Error(String::New(
+                /*ThrowException(Exception::Error(String::New(
                     "Incorrect buffer size of returned value"
-                    " of \"process\" callback")));
-                return;
+                    " of \"process\" callback")));*/
+                UV_PROCESS_STOP();
             }
 
             for (uint16_t sample_i=0; sample_i<nframes; sample_i++) {
                 Local<Value> sample = buffer->Get(sample_i);
                 if (!sample->IsNumber()) {
-                    ThrowException(Exception::Error(String::New(
+                    /*ThrowException(Exception::TypeError(String::New(
                         "Incorrect sample type of returned value"
                         " of \"process\" callback"
-                        ", must be a {Number|Float}")));
-                    return;
+                        ", must be a {Number|Float}")));*/
+                    UV_PROCESS_STOP();
                 }
                 playback_buf[port_index][sample_i] = sample->ToNumber()->Value();
             }
         } // for (ports)
     } // if we has something to output from callback
 
-    scope.Close(Undefined());
-    delete task;
-    baton = NULL;
-    uv_sem_post(&semaphore);
+    UV_PROCESS_STOP();
 } // uv_process() }}}2
 
 int jack_process(jack_nframes_t nframes, void *arg) // {{{2
