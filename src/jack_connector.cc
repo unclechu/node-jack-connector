@@ -43,6 +43,11 @@
         }
 #define STR_SIZE 256
 #define MAX_PORTS 64
+#define NEED_JACK_CLIENT_OPENED() \
+        { \
+        if (client == 0 && !closing) \
+            THROW_ERR(ERR_MSG_NEED_TO_OPEN_JACK_CLIENT); \
+        }
 
 using namespace v8;
 
@@ -111,7 +116,7 @@ Handle<Value> getVersion(const Arguments &args) // {{{1
 Handle<Value> checkClientOpenedSync(const Arguments &args) // {{{1
 {
     HandleScope scope;
-    return scope.Close(Boolean::New(client != 0));
+    return scope.Close(Boolean::New(client != 0 && !closing));
 } // checkClientOpenedSync() }}}1
 
 /**
@@ -127,7 +132,8 @@ Handle<Value> openClientSync(const Arguments &args) // {{{1
 {
     HandleScope scope;
 
-    if (client != 0) THROW_ERR("You need close old JACK-client before open new");
+    if (client != 0 || closing)
+        THROW_ERR("You need close old JACK-client before open new");
 
     String::AsciiValue arg_client_name(args[0]->ToString());
     char *client_name = *arg_client_name;
@@ -185,7 +191,6 @@ void uv_close_task(uv_work_t* task, int status) // {{{1
             "Couldn't close JACK-client")));
 
     client = 0;
-    closing = false;
 
     if (hasCloseCallback) {
         closeCallback->Call(Context::GetCurrent()->Global(), 0, NULL);
@@ -197,6 +202,10 @@ void uv_close_task(uv_work_t* task, int status) // {{{1
         //processCallback - TODO set to undefined
         hasProcessCallback = false;
     }
+
+    // TODO cleanup stuff
+
+    closing = false;
 
     scope.Close(Undefined());
     delete task;
@@ -257,7 +266,7 @@ Handle<Value> closeClient(const Arguments &args) // {{{1
 Handle<Value> registerInPortSync(const Arguments &args) // {{{1
 {
     HandleScope scope;
-    if (client == 0) THROW_ERR(ERR_MSG_NEED_TO_OPEN_JACK_CLIENT);
+    NEED_JACK_CLIENT_OPENED();
 
     String::AsciiValue port_name(args[0]->ToString());
 
@@ -288,7 +297,7 @@ Handle<Value> registerInPortSync(const Arguments &args) // {{{1
 Handle<Value> registerOutPortSync(const Arguments &args) // {{{1
 {
     HandleScope scope;
-    if (client == 0) THROW_ERR(ERR_MSG_NEED_TO_OPEN_JACK_CLIENT);
+    NEED_JACK_CLIENT_OPENED();
 
     String::AsciiValue port_name(args[0]->ToString());
 
@@ -323,7 +332,7 @@ Handle<Value> registerOutPortSync(const Arguments &args) // {{{1
 Handle<Value> unregisterPortSync(const Arguments &args) // {{{1
 {
     HandleScope scope;
-    if (client == 0) THROW_ERR(ERR_MSG_NEED_TO_OPEN_JACK_CLIENT);
+    NEED_JACK_CLIENT_OPENED();
 
     String::AsciiValue arg_port_name(args[0]->ToString());
     char full_port_name[STR_SIZE];
@@ -375,7 +384,7 @@ Handle<Value> unregisterPortSync(const Arguments &args) // {{{1
 Handle<Value> checkActiveSync(const Arguments &args) // {{{1
 {
     HandleScope scope;
-    if (client == 0) THROW_ERR(ERR_MSG_NEED_TO_OPEN_JACK_CLIENT);
+    NEED_JACK_CLIENT_OPENED();
 
     if (::client_active > 0) {
         return scope.Close(Boolean::New(true));
@@ -396,7 +405,7 @@ Handle<Value> checkActiveSync(const Arguments &args) // {{{1
 Handle<Value> activateSync(const Arguments &args) // {{{1
 {
     HandleScope scope;
-    if (client == 0) THROW_ERR(ERR_MSG_NEED_TO_OPEN_JACK_CLIENT);
+    NEED_JACK_CLIENT_OPENED();
 
     if (client_active) THROW_ERR("JACK-client already activated");
 
@@ -420,7 +429,7 @@ Handle<Value> activateSync(const Arguments &args) // {{{1
 Handle<Value> deactivateSync(const Arguments &args) // {{{1
 {
     HandleScope scope;
-    if (client == 0) THROW_ERR(ERR_MSG_NEED_TO_OPEN_JACK_CLIENT);
+    NEED_JACK_CLIENT_OPENED();
 
     if (! client_active) THROW_ERR("JACK-client is not active");
 
@@ -446,7 +455,7 @@ Handle<Value> deactivateSync(const Arguments &args) // {{{1
 Handle<Value> connectPortSync(const Arguments &args) // {{{1
 {
     HandleScope scope;
-    if (client == 0) THROW_ERR(ERR_MSG_NEED_TO_OPEN_JACK_CLIENT);
+    NEED_JACK_CLIENT_OPENED();
 
     if (! client_active) THROW_ERR("JACK-client is not active");
 
@@ -484,7 +493,7 @@ Handle<Value> connectPortSync(const Arguments &args) // {{{1
 Handle<Value> disconnectPortSync(const Arguments &args) // {{{1
 {
     HandleScope scope;
-    if (client == 0) THROW_ERR(ERR_MSG_NEED_TO_OPEN_JACK_CLIENT);
+    NEED_JACK_CLIENT_OPENED();
 
     if (! client_active) THROW_ERR("JACK-client is not active");
 
@@ -520,7 +529,7 @@ Handle<Value> disconnectPortSync(const Arguments &args) // {{{1
 Handle<Value> getAllPortsSync(const Arguments &args) // {{{1
 {
     HandleScope scope;
-    if (client == 0) THROW_ERR(ERR_MSG_NEED_TO_OPEN_JACK_CLIENT);
+    NEED_JACK_CLIENT_OPENED();
 
     bool withOwn = true;
     if (args.Length() > 0 && (args[0]->IsBoolean() || args[0]->IsNumber())) {
@@ -547,7 +556,7 @@ Handle<Value> getAllPortsSync(const Arguments &args) // {{{1
 Handle<Value> getOutPortsSync(const Arguments &args) // {{{1
 {
     HandleScope scope;
-    if (client == 0) THROW_ERR(ERR_MSG_NEED_TO_OPEN_JACK_CLIENT);
+    NEED_JACK_CLIENT_OPENED();
 
     bool withOwn = true;
     if (args.Length() > 0 && (args[0]->IsBoolean() || args[0]->IsNumber())) {
@@ -574,7 +583,7 @@ Handle<Value> getOutPortsSync(const Arguments &args) // {{{1
 Handle<Value> getInPortsSync(const Arguments &args) // {{{1
 {
     HandleScope scope;
-    if (client == 0) THROW_ERR(ERR_MSG_NEED_TO_OPEN_JACK_CLIENT);
+    NEED_JACK_CLIENT_OPENED();
 
     bool withOwn = true;
     if (args.Length() > 0 && (args[0]->IsBoolean() || args[0]->IsNumber())) {
@@ -599,6 +608,7 @@ Handle<Value> getInPortsSync(const Arguments &args) // {{{1
  *   console.log(jackConnector.portExistsSync('nowhere:never'));
  *     // false
  * @returns {v8::Boolean} portExists
+ * @TODO check for jack client
  */
 Handle<Value> portExistsSync(const Arguments &args) // {{{1
 {
@@ -623,6 +633,7 @@ Handle<Value> portExistsSync(const Arguments &args) // {{{1
  *   console.log(jackConnector.outPortExistsSync('system:capture_1'));
  *     // true
  * @returns {v8::Boolean} outPortExists
+ * @TODO check for jack client
  */
 Handle<Value> outPortExistsSync(const Arguments &args) // {{{1
 {
@@ -647,6 +658,7 @@ Handle<Value> outPortExistsSync(const Arguments &args) // {{{1
  *   console.log(jackConnector.inPortExistsSync('system:capture_1'));
  *     // false
  * @returns {v8::Boolean} inPortExists
+ * @TODO check for jack client
  */
 Handle<Value> inPortExistsSync(const Arguments &args) // {{{1
 {
@@ -677,7 +689,7 @@ Handle<Value> inPortExistsSync(const Arguments &args) // {{{1
 Handle<Value> bindProcessSync(const Arguments &args) // {{{1
 {
     HandleScope scope;
-    if (client == 0) THROW_ERR(ERR_MSG_NEED_TO_OPEN_JACK_CLIENT);
+    NEED_JACK_CLIENT_OPENED();
 
     if ( ! args[0]->IsFunction()) {
         ThrowException(Exception::TypeError(String::New("Callback argument must be a function")));
