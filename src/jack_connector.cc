@@ -608,11 +608,11 @@ Handle<Value> getInPortsSync(const Arguments &args) // {{{1
  *   console.log(jackConnector.portExistsSync('nowhere:never'));
  *     // false
  * @returns {v8::Boolean} portExists
- * @TODO check for jack client
  */
 Handle<Value> portExistsSync(const Arguments &args) // {{{1
 {
     HandleScope scope;
+    NEED_JACK_CLIENT_OPENED();
 
     String::AsciiValue checkPortName_arg(args[0]->ToString());
     char *checkPortName = *checkPortName_arg;
@@ -633,11 +633,11 @@ Handle<Value> portExistsSync(const Arguments &args) // {{{1
  *   console.log(jackConnector.outPortExistsSync('system:capture_1'));
  *     // true
  * @returns {v8::Boolean} outPortExists
- * @TODO check for jack client
  */
 Handle<Value> outPortExistsSync(const Arguments &args) // {{{1
 {
     HandleScope scope;
+    NEED_JACK_CLIENT_OPENED();
 
     String::AsciiValue checkPortName_arg(args[0]->ToString());
     char *checkPortName = *checkPortName_arg;
@@ -658,11 +658,11 @@ Handle<Value> outPortExistsSync(const Arguments &args) // {{{1
  *   console.log(jackConnector.inPortExistsSync('system:capture_1'));
  *     // false
  * @returns {v8::Boolean} inPortExists
- * @TODO check for jack client
  */
 Handle<Value> inPortExistsSync(const Arguments &args) // {{{1
 {
     HandleScope scope;
+    NEED_JACK_CLIENT_OPENED();
 
     String::AsciiValue checkPortName_arg(args[0]->ToString());
     char *checkPortName = *checkPortName_arg;
