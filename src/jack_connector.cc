@@ -976,7 +976,6 @@ int16_t get_own_out_port_index(char* short_port_name) // {{{1
     return -1; // port not found
 } // check_own_out_port_exists() }}}1
 
-
 // processing {{{1
 
 void uv_process(uv_work_t* task, int status) // {{{2
@@ -1108,6 +1107,46 @@ int jack_process(jack_nframes_t nframes, void *arg) // {{{2
 
 // processing }}}1
 
+/**
+ * Get JACK sample rate
+ *
+ * @public
+ * @returns {v8::Number} sampleRate
+ * @example
+ *   var jackConnector = require('jack-connector');
+ *   jackConnector.openClientSync('jack_client_name');
+ *   console.log( jackConnector.getSampleRateSync() );
+ */
+Handle<Value> getSampleRateSync(const Arguments &args) // {{{1
+{
+    HandleScope scope;
+    NEED_JACK_CLIENT_OPENED();
+    Local<Number> val = Local<Number>::New(
+        Number::New( jack_get_sample_rate(client) )
+    );
+    return scope.Close(val);
+} // getSampleRateSync() }}}1
+
+/**
+ * Get JACK buffer size
+ *
+ * @public
+ * @returns {v8::Number} bufferSize
+ * @example
+ *   var jackConnector = require('jack-connector');
+ *   jackConnector.openClientSync('jack_client_name');
+ *   console.log( jackConnector.getBufferSizeSync() );
+ */
+Handle<Value> getBufferSizeSync(const Arguments &args) // {{{1
+{
+    HandleScope scope;
+    NEED_JACK_CLIENT_OPENED();
+    Local<Number> val = Local<Number>::New(
+        Number::New( jack_get_buffer_size(client) )
+    );
+    return scope.Close(val);
+} // getBufferSizeSync() }}}1
+
 void init(Handle<Object> target) // {{{1
 {
 
@@ -1181,6 +1220,14 @@ void init(Handle<Object> target) // {{{1
 
     target->Set( String::NewSymbol("deactivateSync"),
                  FunctionTemplate::New(deactivateSync)->GetFunction() );
+
+    // get some jack info
+
+    target->Set( String::NewSymbol("getSampleRateSync"),
+                 FunctionTemplate::New(getSampleRateSync)->GetFunction() );
+
+    target->Set( String::NewSymbol("getBufferSizeSync"),
+                 FunctionTemplate::New(getBufferSizeSync)->GetFunction() );
 
 } // init() }}}1
 
