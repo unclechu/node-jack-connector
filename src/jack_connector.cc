@@ -70,9 +70,17 @@ void reset_own_ports_list();
 int jack_process(jack_nframes_t nframes, void *arg);
 
 Persistent<Function> processCallback;
+Persistent<Function> closeCallback;
 bool hasProcessCallback = false; // TODO unbind process callback and check for memory leak
+bool hasCloseCallback = false;
+bool process = false;
+bool closing = false;
 uv_work_t *baton;
+uv_work_t *close_baton;
 static uv_sem_t semaphore;
+
+Handle<Value> deactivateSync(const Arguments &args);
+void uv_work_plug(uv_work_t* task) {}
 
 /**
  * Get version of this module
@@ -145,9 +153,55 @@ Handle<Value> openClientSync(const Arguments &args) // {{{1
     }
 
     jack_set_process_callback(client, jack_process, 0);
+    process = true;
 
     return scope.Close(Undefined());
 } // openClientSync() }}}1
+
+void uv_close_task(uv_work_t* task, int status) // {{{1
+{
+    HandleScope scope;
+
+    if (baton) {
+        scope.Close(Undefined());
+        delete task;
+        close_baton = NULL;
+        close_baton = new uv_work_t();
+        uv_queue_work(uv_default_loop(), close_baton, uv_work_plug, uv_close_task);
+        return;
+    }
+
+    // deactivate first if client activated
+    if (client_active) {
+        if (jack_deactivate(client) != 0)
+            ThrowException(Exception::Error(String::New(
+                "Couldn't deactivate JACK-client")));
+
+        client_active = 0;
+    }
+
+    if (jack_client_close(client) != 0)
+        ThrowException(Exception::Error(String::New(
+            "Couldn't close JACK-client")));
+
+    client = 0;
+    closing = false;
+
+    if (hasCloseCallback) {
+        closeCallback->Call(Context::GetCurrent()->Global(), 0, NULL);
+        //closeCallback - TODO set to undefined
+        hasCloseCallback = false;
+    }
+
+    if (hasProcessCallback) {
+        //processCallback - TODO set to undefined
+        hasProcessCallback = false;
+    }
+
+    scope.Close(Undefined());
+    delete task;
+    close_baton = NULL;
+} // uv_close_task() }}}1
 
 /**
  * Close JACK-client
@@ -156,20 +210,37 @@ Handle<Value> openClientSync(const Arguments &args) // {{{1
  * @example
  *   var jackConnector = require('jack-connector');
  *   jackConnector.openClientSync('JACK_connector_client_name');
- *   jackConnector.closeClientSync();
+ *   jackConnector.closeClient(function () {
+ *     console.log('client closed');
+ *   });
+ * @async
  * @TODO free jack ports
  */
-Handle<Value> closeClientSync(const Arguments &args) // {{{1
+Handle<Value> closeClient(const Arguments &args) // {{{1
 {
     HandleScope scope;
+
+    if (closing) {
+        THROW_ERR("Already started closing JACK-client");
+    } else {
+        closing = true;
+    }
+
     if (client == 0) THROW_ERR("JACK-client already closed");
 
-    if (jack_client_close(client) != 0) THROW_ERR("Couldn't close JACK-client");
+    process = false;
 
-    client = 0;
+    if (args[0]->IsFunction()) {
+        Local<Function> callback = Local<Function>::Cast( args[0] );
+        closeCallback = Persistent<Function>::New( callback );
+        hasCloseCallback = true;
+    }
+
+    close_baton = new uv_work_t();
+    uv_queue_work(uv_default_loop(), close_baton, uv_work_plug, uv_close_task);
 
     return scope.Close(Undefined());
-} // closeClientSync() }}}1
+} // closeClient() }}}1
 
 /**
  * Register new port for this client
@@ -279,7 +350,10 @@ Handle<Value> unregisterPortSync(const Arguments &args) // {{{1
 
     jack_port_t *port = jack_port_by_name(client, full_port_name);
 
-    if (jack_port_unregister(client, port) != 0) THROW_ERR("Couldn't unregister JACK-port");
+    if (jack_port_unregister(client, port) != 0)
+        THROW_ERR("Couldn't unregister JACK-port");
+
+    // .....
 
     reset_own_ports_list();
 
@@ -893,8 +967,6 @@ int16_t get_own_out_port_index(char* short_port_name) // {{{1
 
 // processing {{{1
 
-void work(uv_work_t* task) {}
-
 void uv_process(uv_work_t* task, int status) // {{{2
 {
     HandleScope scope;
@@ -986,15 +1058,22 @@ void uv_process(uv_work_t* task, int status) // {{{2
 
     scope.Close(Undefined());
     delete task;
+    baton = NULL;
     uv_sem_post(&semaphore);
 } // uv_process() }}}2
 
 int jack_process(jack_nframes_t nframes, void *arg) // {{{2
 {
+    if (!process) return 0;
     if (!hasProcessCallback) return 0;
 
-    if (&semaphore) uv_sem_destroy(&semaphore);
+    if (baton) {
+        uv_sem_wait(&semaphore);
+        uv_sem_destroy(&semaphore);
+    }
+
     baton = new uv_work_t();
+
     if (uv_sem_init(&semaphore, 0) < 0) { perror("uv_sem_init"); return 1; }
 
     for (uint8_t i=0; i<own_in_ports_size; i++) {
@@ -1008,7 +1087,7 @@ int jack_process(jack_nframes_t nframes, void *arg) // {{{2
     }
 
     baton->data = (void*)(uint16_t)nframes;
-    uv_queue_work(uv_default_loop(), baton, work, uv_process);
+    uv_queue_work(uv_default_loop(), baton, uv_work_plug, uv_process);
     uv_sem_wait(&semaphore);
     uv_sem_destroy(&semaphore);
 
@@ -1031,8 +1110,8 @@ void init(Handle<Object> target) // {{{1
     target->Set( String::NewSymbol("openClientSync"),
                  FunctionTemplate::New(openClientSync)->GetFunction() );
 
-    target->Set( String::NewSymbol("closeClientSync"),
-                 FunctionTemplate::New(closeClientSync)->GetFunction() );
+    target->Set( String::NewSymbol("closeClient"),
+                 FunctionTemplate::New(closeClient)->GetFunction() );
 
     // registering ports
 

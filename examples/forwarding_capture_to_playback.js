@@ -47,6 +47,8 @@ process.on('SIGTERM', function () {
 	console.log('Deactivating JACK client...');
 	jackConnector.deactivateSync();
 	console.log('Closing JACK client...');
-	jackConnector.closeClientSync();
-	console.log('Exiting...');
+	jackConnector.closeClient(function () {
+		console.log('Exiting...');
+		process.exit(0);
+	});
 });
