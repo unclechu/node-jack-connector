@@ -70,6 +70,7 @@ void reset_own_ports_list();
 int jack_process(jack_nframes_t nframes, void *arg);
 
 Persistent<Function> processCallback;
+bool hasProcessCallback = false; // TODO unbind process callback and check for memory leak
 uv_work_t *baton;
 static uv_sem_t semaphore;
 
@@ -611,6 +612,7 @@ Handle<Value> bindProcessSync(const Arguments &args) // {{{1
 
     Local<Function> callback = Local<Function>::Cast( args[0] );
     processCallback = Persistent<Function>::New( callback );
+    hasProcessCallback = true;
 
     return scope.Close(Undefined());
 } // bindProcessSync() }}}1
@@ -848,11 +850,10 @@ bool check_port_exists(char *check_port_name, unsigned long flags) // {{{1
             if (port_name[n] == '\0' || check_port_name[n] == '\0' || n>=STR_SIZE-1) {
                 if (port_name[n] == check_port_name[n]) {
                     return true;
+                } else {
+                    break;
                 }
-                break;
-            }
-
-            if (port_name[n] != check_port_name[n]) {
+            } else if (port_name[n] != check_port_name[n]) {
                 break;
             }
         }
@@ -860,11 +861,41 @@ bool check_port_exists(char *check_port_name, unsigned long flags) // {{{1
     return false;
 } // check_port_exists() }}}1
 
+/**
+ * Get own output port index
+ *
+ * @param {char} short_port_name - Own port name without client name
+ * @private
+ * @returns {int16_t} port_index - Port index or -1 if not found
+ */
+int16_t get_own_out_port_index(char* short_port_name) // {{{1
+{
+    for (uint8_t n=0; n<own_out_ports_size; n++) {
+        for (uint16_t m=0; m<STR_SIZE; m++) {
+            if (
+                short_port_name[m] == '\0' ||
+                own_out_ports_short_names[n][m] == '\0'
+            ) {
+                if (short_port_name[m] == own_out_ports_short_names[n][m]) {
+                    return n; // index of port
+                } else {
+                    break; // go to next port
+                }
+            } else if (short_port_name[m] != own_out_ports_short_names[n][m]) {
+                break; // go to next port
+            }
+        } // for (char of port name)
+    } // for (ports)
 
+    return -1; // port not found
+} // check_own_out_port_exists() }}}1
+
+
+// processing {{{1
 
 void work(uv_work_t* task) {}
 
-void after(uv_work_t* task, int status)
+void uv_process(uv_work_t* task, int status) // {{{2
 {
     HandleScope scope;
 
@@ -883,21 +914,86 @@ void after(uv_work_t* task, int status)
         );
     }
 
+    // prepare args to callback
     const unsigned argc = 2;
     Local<Value> argv[argc] = {
         Local<Value>::New( Number::New( nframes ) ),
         Local<Value>::New( capture )
     };
-    processCallback->Call(Context::GetCurrent()->Global(), argc, argv);
+
+    Local<Value> retval =
+        processCallback->Call(Context::GetCurrent()->Global(), argc, argv);
+
+    if (!retval->IsNull() && !retval->IsUndefined() && !retval->IsObject()) {
+        ThrowException(Exception::TypeError(String::New(
+            "Returned value of \"process\" callback must be an object"
+            " of port{String}:buffer{Array.<Number|Float>} values"
+            " or null or undefined")));
+        return;
+    }
+
+    if (retval->IsObject()) {
+        Local<Object> obj = retval.As<Object>();
+        Local<Array> keys = obj->GetOwnPropertyNames();
+        for (uint16_t i=0; i<keys->Length(); i++) {
+            Local<Value> key = keys->Get(i);
+            if (!key->IsString()) {
+                ThrowException(Exception::TypeError(String::New(
+                    "Incorrect key type in returned value of \"process\""
+                    " callback, must be a string (own port name)")));
+                return;
+            }
+            String::AsciiValue port_name(key->ToString());
+
+            int16_t port_index = get_own_out_port_index(*port_name);
+            if (port_index == -1) {
+                char err[] = "Port \"%s\" not found";
+                char err_msg[STR_SIZE + sizeof(err)];
+                sprintf(err_msg, err, *port_name);
+                ThrowException(Exception::Error(String::New(err_msg)));
+                return;
+            }
+
+            Local<Value> val = obj->Get(key);
+            if (!val->IsArray()) {
+                ThrowException(Exception::Error(String::New(
+                    "Incorrect buffer type of returned value of \"process\""
+                    " callback, must be an Array<Float|Number>")));
+                return;
+            }
+            Local<Array> buffer = val.As<Array>();
+
+            if (buffer->Length() != nframes) {
+                ThrowException(Exception::Error(String::New(
+                    "Incorrect buffer size of returned value"
+                    " of \"process\" callback")));
+                return;
+            }
+
+            for (uint16_t sample_i=0; sample_i<nframes; sample_i++) {
+                Local<Value> sample = buffer->Get(sample_i);
+                if (!sample->IsNumber()) {
+                    ThrowException(Exception::Error(String::New(
+                        "Incorrect sample type of returned value"
+                        " of \"process\" callback"
+                        ", must be a {Number|Float}")));
+                    return;
+                }
+                playback_buf[port_index][sample_i] = sample->ToNumber()->Value();
+            }
+        } // for (ports)
+    } // if we has something to output from callback
 
     scope.Close(Undefined());
     delete task;
     uv_sem_post(&semaphore);
-}
+} // uv_process() }}}2
 
-int jack_process(jack_nframes_t nframes, void *arg)
+int jack_process(jack_nframes_t nframes, void *arg) // {{{2
 {
-    if (&semaphore) { uv_sem_post(&semaphore); uv_sem_destroy(&semaphore); }
+    if (!hasProcessCallback) return 0;
+
+    if (&semaphore) uv_sem_destroy(&semaphore);
     baton = new uv_work_t();
     if (uv_sem_init(&semaphore, 0) < 0) { perror("uv_sem_init"); return 1; }
 
@@ -906,13 +1002,20 @@ int jack_process(jack_nframes_t nframes, void *arg)
             jack_port_get_buffer(capture_ports[i], nframes);
     }
 
+    for (uint8_t i=0; i<own_out_ports_size; i++) {
+        playback_buf[i] = (jack_default_audio_sample_t *)
+            jack_port_get_buffer(playback_ports[i], nframes);
+    }
+
     baton->data = (void*)(uint16_t)nframes;
-    uv_queue_work(uv_default_loop(), baton, work, after);
+    uv_queue_work(uv_default_loop(), baton, work, uv_process);
     uv_sem_wait(&semaphore);
     uv_sem_destroy(&semaphore);
 
     return 0;
-}
+} // jack_process() }}}2
+
+// processing }}}1
 
 void init(Handle<Object> target) // {{{1
 {
