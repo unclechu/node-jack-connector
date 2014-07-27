@@ -1,23 +1,60 @@
-# Node.JS JACK-connector
+Node.JS JACK-connector
+======================
 
 Bindings JACK-Audio-Connection-Kit for Node.JS
 
-# Install
-```
+Install
+=======
+```bash
 npm install jack-connector
 ```
 
-# Build requirements
+Build requirements
+==================
 libjack2, libjack2-devel
 
-# How to use
+How to use
+==========
 ```javascript
 var jackConnector = require('jack-connector');
-jackConnector.openClientSync('JACK_connector_client_name');
+jackConnector.openClientSync('Noize Generator');
 jackConnector.registerOutPortSync('output');
-jackConnector.registerInPortSync('input');
+
+function audioProcess(err, nframes) {
+	if (err) {
+		console.error(err);
+		process.exit(1);
+	}
+
+	var ret = [];
+	for (var i=0; i<nframes; i++) ret.push((Math.random() * 2) - 1);
+	return { output: ret };
+}
+
+jackConnector.bindProcessSync(audioProcess);
 jackConnector.activateSync();
-(function mainLoop() {
-    setTimeout(function () { mainLoop(); }, 10);
-})();
+
+(function mainLoop() { setTimeout(mainLoop, 1000000000); })();
+
+process.on('SIGTERM', function () {
+	jackConnector.deactivateSync();
+	jackConnector.closeClient(function () {
+		process.exit(0);
+	});
+});
 ```
+
+More examples
+=============
+
+(./examples/)[examples]
+
+Author
+======
+
+Viacheslav Lotsmanov
+
+License
+=======
+
+MIT
