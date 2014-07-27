@@ -15,7 +15,12 @@ jackConnector.openClientSync(jackClientName);
 console.log('Registering JACK ports...');
 jackConnector.registerOutPortSync('out');
 
-function audioProcess(nframes) {
+function audioProcess(err, nframes) {
+	if (err) {
+		console.error(err);
+		process.exit(1);
+	}
+
 	var ret = [];
 	for (var i=0; i<nframes; i++) ret.push((Math.random() * 2) - 1);
 	return { out: ret };

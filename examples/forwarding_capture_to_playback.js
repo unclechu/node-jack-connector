@@ -18,12 +18,16 @@ jackConnector.registerInPortSync('in_r');
 jackConnector.registerOutPortSync('out_l');
 jackConnector.registerOutPortSync('out_r');
 
-function audioProcess(nframes, capture) {
-	var out = {
+function audioProcess(err, nframes, capture) {
+	if (err) {
+		console.error(err);
+		process.exit(1);
+	}
+
+	return {
 		out_l: capture.in_l,
 		out_r: capture.in_r,
 	};
-	return out;
 }
 
 console.log('Binding audio-process callback...');
