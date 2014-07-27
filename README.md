@@ -24,6 +24,7 @@ function audioProcess(err, nframes) {
 	if (err) {
 		console.error(err);
 		process.exit(1);
+		return;
 	}
 
 	var ret = [];
@@ -40,7 +41,13 @@ jackConnector.connectPortSync('Noize Generator:output', 'system:playback_2');
 
 process.on('SIGTERM', function () {
 	jackConnector.deactivateSync();
-	jackConnector.closeClient(function () {
+	jackConnector.closeClient(function (err) {
+		if (err) {
+			console.error(err);
+			process.exit(1);
+			return;
+		}
+
 		process.exit(0);
 	});
 });
