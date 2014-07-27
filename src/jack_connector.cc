@@ -28,7 +28,7 @@
  * THE SOFTWARE.
  */
 
-#define VERSION "0.1.3"
+#define VERSION "0.1.4"
 
 #include <node.h>
 #include <jack/jack.h>
