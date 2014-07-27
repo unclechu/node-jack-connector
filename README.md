@@ -33,6 +33,8 @@ function audioProcess(err, nframes) {
 
 jackConnector.bindProcessSync(audioProcess);
 jackConnector.activateSync();
+jackConnector.connectPortSync('Noize Generator:output', 'system:playback_1');
+jackConnector.connectPortSync('Noize Generator:output', 'system:playback_2');
 
 (function mainLoop() { setTimeout(mainLoop, 1000000000); })();
 
@@ -47,7 +49,7 @@ process.on('SIGTERM', function () {
 More examples
 =============
 
-(./examples/)[examples]
+[examples/](./examples/)
 
 Author
 ======
