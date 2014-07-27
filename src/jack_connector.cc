@@ -7,7 +7,7 @@
  *
  * The MIT License (MIT)
  *
- * Copyright (c) 2013 Viacheslav Lotsmanov
+ * Copyright (c) 2013-2014 Viacheslav Lotsmanov
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -28,7 +28,7 @@
  * THE SOFTWARE.
  */
 
-#define VERSION "0.1.2"
+#define VERSION "0.1.3"
 
 #include <node.h>
 #include <jack/jack.h>
