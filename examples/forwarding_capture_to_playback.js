@@ -22,6 +22,7 @@ function audioProcess(err, nframes, capture) {
 	if (err) {
 		console.error(err);
 		process.exit(1);
+		return;
 	}
 
 	return {
@@ -51,7 +52,13 @@ process.on('SIGTERM', function () {
 	console.log('Deactivating JACK client...');
 	jackConnector.deactivateSync();
 	console.log('Closing JACK client...');
-	jackConnector.closeClient(function () {
+	jackConnector.closeClient(function (err) {
+		if (err) {
+			console.error(err);
+			process.exit(1);
+			return;
+		}
+
 		console.log('Exiting...');
 		process.exit(0);
 	});

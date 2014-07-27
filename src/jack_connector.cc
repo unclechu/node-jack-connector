@@ -164,14 +164,50 @@ Handle<Value> openClientSync(const Arguments &args) // {{{1
     return scope.Close(Undefined());
 } // openClientSync() }}}1
 
-void uv_close_task(uv_work_t* task, int status) // {{{1
+// uv_close_task() {{{1
+
+#define UV_CLOSE_TASK_CLEANUP() \
+        { \
+            scope.Close(Undefined()); \
+            delete task; \
+            close_baton = NULL; \
+        }
+#define UV_CLOSE_TASK_CLEANUP_CALLBACKS() \
+        { \
+            if (hasCloseCallback) { \
+                closeCallback->Call(Context::GetCurrent()->Global(), 0, NULL); \
+                hasCloseCallback = false; \
+            } \
+            if (hasProcessCallback) { \
+                hasProcessCallback = false; \
+            } \
+        }
+#define UV_CLOSE_TASK_STOP() \
+        { \
+            UV_CLOSE_TASK_CLEANUP(); \
+            UV_CLOSE_TASK_CLEANUP_CALLBACKS(); \
+            return; \
+        }
+#define UV_CLOSE_TASK_EXCEPTION(err) \
+        { \
+            if (hasCloseCallback) { \
+                const uint8_t argc = 1; \
+                Local<Value> argv[argc] = { \
+                    Local<Value>::New( err ), \
+                }; \
+                closeCallback->Call(Context::GetCurrent()->Global(), argc, argv); \
+                hasCloseCallback = false; \
+            } \
+            UV_CLOSE_TASK_STOP(); \
+        }
+
+void uv_close_task(uv_work_t* task, int status)
 {
     HandleScope scope;
 
     if (baton) {
-        scope.Close(Undefined());
-        delete task;
-        close_baton = NULL;
+        UV_CLOSE_TASK_CLEANUP();
+        // TODO fix memory leak
         close_baton = new uv_work_t();
         uv_queue_work(uv_default_loop(), close_baton, uv_work_plug, uv_close_task);
         return;
@@ -180,28 +216,19 @@ void uv_close_task(uv_work_t* task, int status) // {{{1
     // deactivate first if client activated
     if (client_active) {
         if (jack_deactivate(client) != 0)
-            ThrowException(Exception::Error(String::New(
-                "Couldn't deactivate JACK-client")));
+            UV_CLOSE_TASK_EXCEPTION(
+                Exception::Error(String::New("Couldn't deactivate JACK-client")));
 
         client_active = 0;
     }
 
     if (jack_client_close(client) != 0)
-        ThrowException(Exception::Error(String::New(
-            "Couldn't close JACK-client")));
+        UV_CLOSE_TASK_EXCEPTION(
+            Exception::Error(String::New("Couldn't close JACK-client")));
 
     client = 0;
 
-    if (hasCloseCallback) {
-        closeCallback->Call(Context::GetCurrent()->Global(), 0, NULL);
-        //closeCallback - TODO set to undefined
-        hasCloseCallback = false;
-    }
-
-    if (hasProcessCallback) {
-        //processCallback - TODO set to undefined
-        hasProcessCallback = false;
-    }
+    UV_CLOSE_TASK_CLEANUP_CALLBACKS();
 
     // TODO cleanup stuff
 

@@ -7,7 +7,7 @@
  */
 
 var jackConnector = require('../index.js');
-var jackClientName = 'JACK connector - sine';
+var jackClientName = 'JACK connector - sine generator';
 
 console.log('Opening JACK client...');
 jackConnector.openClientSync(jackClientName);
@@ -31,6 +31,7 @@ function audioProcess(err, nframes) {
 	if (err) {
 		console.error(err);
 		process.exit(1);
+		return;
 	}
 
 	var ret = [], deg = 0;
@@ -61,7 +62,13 @@ process.on('SIGTERM', function () {
 	console.log('Deactivating JACK client...');
 	jackConnector.deactivateSync();
 	console.log('Closing JACK client...');
-	jackConnector.closeClient(function () {
+	jackConnector.closeClient(function (err) {
+		if (err) {
+			console.error(err);
+			process.exit(1);
+			return;
+		}
+
 		console.log('Exiting...');
 		process.exit(0);
 	});
