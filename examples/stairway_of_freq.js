@@ -21,7 +21,7 @@ var sampleRate = jackConnector.getSampleRateSync();
 var freqMin = 20;
 var freqMax = 20000;
 var freqCur;
-var freqStep = 1;
+var freqStep = 8;
 
 var phaseInc; // phase increment
 var phase = 0;
