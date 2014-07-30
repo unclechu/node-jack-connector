@@ -56,12 +56,6 @@ var upFreqSpeed = 5; // ms
 upFreqSpeed *= sampleRate;
 upFreqSpeed /= 1000;
 
-function relativeVal(relSrc, relMin, relMax, min, max) {
-	if (relSrc < relMin) relSrc = relMin;
-	else if (relSrc > relMax) relSrc = relMax;
-	return ((relSrc - relMin) * (max-min) / (relMax - relMin)) + min;
-}
-
 function updateIncrement() {
 	phaseInc = ((freqCur * 2) * Math.PI) / sampleRate;
 }
