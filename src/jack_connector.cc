@@ -33,6 +33,7 @@
 #include <node.h>
 #include <jack/jack.h>
 #include <errno.h>
+#include <string.h>
 #include <uv.h>
 
 #define ERR_MSG_NEED_TO_OPEN_JACK_CLIENT "JACK-client is not opened, need to open JACK-client"
@@ -83,6 +84,17 @@ bool closing = false;
 uv_work_t *baton;
 uv_work_t *close_baton;
 static uv_sem_t semaphore;
+
+Persistent<Function> clientRegistrationCallback;
+bool hasClientRegistrationCallback = false;
+uv_mutex_t client_registration_callback_mutex;
+uv_async_t client_registration_callback_async_data;
+
+typedef struct ClientRegistrationInfo__ {
+    const char *name;
+    int registered;
+    struct ClientRegistrationInfo__ *next;
+} ClientRegistrationInfo;
 
 Handle<Value> deactivateSync(const Arguments &args);
 void uv_work_plug(uv_work_t* task) {}
@@ -395,6 +407,103 @@ Handle<Value> unregisterPortSync(const Arguments &args) // {{{1
 
     return scope.Close(Undefined());
 } // unregisterPortSync() }}}1
+
+
+// maintain a linked list of info objects is maintained because uv may coalesce
+// multiple calls to uv_async_send into a single invocation of the callback
+static void client_registration_jack_callback(const char *name, int registered, void *arg)
+{
+    uv_mutex_lock(&client_registration_callback_mutex);
+
+    ClientRegistrationInfo *info = new ClientRegistrationInfo;
+    info->name = new char[strlen(name) + 1 ];
+    strcpy((char*)info->name, name);
+    info->registered = registered;
+    info->next = (ClientRegistrationInfo *)client_registration_callback_async_data.data;
+
+    client_registration_callback_async_data.data = info;
+
+    uv_mutex_unlock(&client_registration_callback_mutex);
+
+    uv_async_send(&client_registration_callback_async_data);
+}
+
+static void client_registration_uv_async_callback(uv_async_t *async_data, int arg)
+{
+    while (1) {
+	uv_mutex_lock(&client_registration_callback_mutex);
+
+	if (!client_registration_callback_async_data.data) {
+	    uv_mutex_unlock(&client_registration_callback_mutex);
+	    break;
+	}
+
+	ClientRegistrationInfo *info = (ClientRegistrationInfo*)client_registration_callback_async_data.data;
+
+	const uint8_t argc = 2;
+	Local<Value> argv[argc] = {
+	    Local<Value>::New( String::New(info->name) ),
+	    Local<Boolean>::New( Boolean::New( info->registered ) )
+	};
+
+	client_registration_callback_async_data.data = info->next;
+	delete[] (info->name);
+	delete info;
+
+	uv_mutex_unlock(&client_registration_callback_mutex);
+
+	clientRegistrationCallback->Call(Context::GetCurrent()->Global(), argc, argv);
+    }
+}
+
+/**
+ * Register a callback to listen for other client connections and disconnections
+ *
+ * @public
+ * @param {v8::Function} callback Callback function. Function will be passed String(name) and boolean(connected)
+ * @example
+ *   var jackConnector = require('jack-connector');
+ *   jackConnector.openClientSync('JACK_connector_client_name');
+ *   jackConnector.registerClientRegistrationCallback(function(client, connected) {
+ *     console.log('client: '+client+' is '+(connected?'connected':'disconnected'));
+ *   });
+ * @TODO deactivating (ability to clear callback, clear on shutdown)
+ */
+Handle<Value> registerClientRegistrationCallback(const Arguments &args) // {{{1
+{
+    HandleScope scope;
+    NEED_JACK_CLIENT_OPENED();
+
+    if ( ! args[0]->IsFunction()) {
+        ThrowException(Exception::TypeError(String::New("Callback argument must be a function")));
+        return scope.Close(Undefined());
+    }
+
+    if (hasClientRegistrationCallback) {
+        ThrowException(Exception::TypeError(String::New("ClientRegistrationCallback has already be registered")));
+        return scope.Close(Undefined());
+
+    }
+
+    uv_mutex_init(&client_registration_callback_mutex);
+
+    Local<Function> callback = Local<Function>::Cast( args[0] );
+    clientRegistrationCallback = Persistent<Function>::New( callback );
+    hasClientRegistrationCallback = true;
+
+    // JACK will call back the client_registration_jack_callback. It's unsafe to
+    // access V8 objects in this context, so uv_async_send will be used to callback
+    // client_registration_uv_async_callback, in which context it is safe
+    // to call the JS supplied callback with the info.
+
+    uv_async_init(uv_default_loop(), &client_registration_callback_async_data, client_registration_uv_async_callback);
+    client_registration_callback_async_data.data = NULL;
+
+    jack_set_client_registration_callback(client, client_registration_jack_callback, 0);
+
+    return scope.Close(Undefined());
+} // registerClientRegistrationCallback() }}}1
+
 
 /**
  * Check JACK-client for active
@@ -1208,6 +1317,11 @@ void init(Handle<Object> target) // {{{1
 
     target->Set( String::NewSymbol("closeClient"),
                  FunctionTemplate::New(closeClient)->GetFunction() );
+
+    // client registration callback
+
+    target->Set( String::NewSymbol("registerClientRegistrationCallback"),
+		FunctionTemplate::New(registerClientRegistrationCallback)->GetFunction() );
 
     // registering ports
 
