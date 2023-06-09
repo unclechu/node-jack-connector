@@ -21,7 +21,7 @@ var sampleRate = jackConnector.getSampleRateSync();
 var freqMin = 20;
 var freqMax = 20000;
 var freqCur;
-var freqStep = 1;
+var freqStep = 8;
 
 var phaseInc; // phase increment
 var phase = 0;
@@ -55,12 +55,6 @@ var upFreqSpeed = 5; // ms
 // transform to samples
 upFreqSpeed *= sampleRate;
 upFreqSpeed /= 1000;
-
-function relativeVal(relSrc, relMin, relMax, min, max) {
-	if (relSrc < relMin) relSrc = relMin;
-	else if (relSrc > relMax) relSrc = relMax;
-	return ((relSrc - relMin) * (max-min) / (relMax - relMin)) + min;
-}
 
 function updateIncrement() {
 	phaseInc = ((freqCur * 2) * Math.PI) / sampleRate;
