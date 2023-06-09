@@ -36,10 +36,12 @@
 #include <uv.h>
 
 #define ERR_MSG_NEED_TO_OPEN_JACK_CLIENT "JACK-client is not opened, need to open JACK-client"
-#define THROW_ERR(Message)                                  \
-  {                                                         \
-    ThrowException(Exception::Error(String::New(Message))); \
-    return scope.Close(Undefined());                        \
+#define THROW_ERR(Message)                \
+  {                                       \
+    napi_throw_error(env, NULL, Message); \
+    napi_value undefined;                 \
+    napi_get_undefined(env, &undefined);  \
+    return undefined;                     \
   }
 #define STR_SIZE 256
 #define MAX_PORTS 64
@@ -49,7 +51,7 @@
       THROW_ERR(ERR_MSG_NEED_TO_OPEN_JACK_CLIENT); \
   }
 
-using namespace v8;
+using namespace Napi;
 
 jack_client_t *client = 0;
 short client_active = 0;
