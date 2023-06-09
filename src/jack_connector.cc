@@ -1016,7 +1016,7 @@ napi_value getBufferSizeSync(napi_env env, napi_callback_info info) // {{{1
     name, 0, func, 0, 0, 0, napi_default, 0 \
   }
 
-void Init(napi_env env, napi_value exports, napi_value module, void *priv) // {{{1
+napi_value Init(napi_env env, napi_value exports) // {{{1
 {
   napi_status status;
 
@@ -1045,6 +1045,13 @@ void Init(napi_env env, napi_value exports, napi_value module, void *priv) // {{
   };
 
   status = napi_define_properties(env, exports, sizeof(descriptors) / sizeof(*descriptors), descriptors);
+
+  if (status != napi_ok)
+  {
+    napi_throw_error(env, NULL, "Error defining exports properties");
+  }
+
+  return exports;
 } // Init() }}}1
 
 NAPI_MODULE(jack_connector, Init);
