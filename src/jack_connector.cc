@@ -816,14 +816,16 @@ int16_t get_own_out_port_index(char *short_port_name) // {{{1
 
 // processing {{{1
 
-#define UV_PROCESS_STOP()     \
-  {                           \
-    scope.Close(Undefined()); \
-    delete task;              \
-    baton = NULL;             \
-    uv_sem_post(&semaphore);  \
-    return;                   \
+#define UV_PROCESS_STOP()                \
+  {                                      \
+    napi_value undefined;                \
+    napi_get_undefined(env, &undefined); \
+    delete task;                         \
+    baton = NULL;                        \
+    uv_sem_post(&semaphore);             \
+    return undefined;                    \
   }
+
 #define UV_PROCESS_EXCEPTION(err)                                          \
   {                                                                        \
     const uint8_t argc = 1;                                                \
