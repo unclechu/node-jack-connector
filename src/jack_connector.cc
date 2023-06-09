@@ -824,14 +824,16 @@ int16_t get_own_out_port_index(char *short_port_name) // {{{1
     uv_sem_post(&semaphore);  \
     return;                   \
   }
-#define UV_PROCESS_EXCEPTION(err)                                       \
-  {                                                                     \
-    const uint8_t argc = 1;                                             \
-    Local<Value> argv[argc] = {                                         \
-        Local<Value>::New(err),                                         \
-    };                                                                  \
-    processCallback->Call(Context::GetCurrent()->Global(), argc, argv); \
-    UV_PROCESS_STOP();                                                  \
+#define UV_PROCESS_EXCEPTION(err)                                          \
+  {                                                                        \
+    const uint8_t argc = 1;                                                \
+    napi_value argv[argc];                                                 \
+    napi_create_string_utf8(env, err, NAPI_AUTO_LENGTH, &argv[0]);         \
+    napi_value global;                                                     \
+    napi_get_global(env, &global);                                         \
+    napi_value result;                                                     \
+    napi_call_function(env, global, processCallback, argc, argv, &result); \
+    UV_PROCESS_STOP();                                                     \
   }
 
 void uv_process(uv_work_t *task, int status) // {{{2
