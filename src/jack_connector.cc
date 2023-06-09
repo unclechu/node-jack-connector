@@ -34,6 +34,9 @@
 #include <jack/jack.h>
 #include <errno.h>
 #include <uv.h>
+#include <cstdlib>
+#include <cassert>
+#include <cstring>
 
 #define ERR_MSG_NEED_TO_OPEN_JACK_CLIENT "JACK-client is not opened, need to open JACK-client"
 #define THROW_ERR(Message)                \
@@ -51,8 +54,6 @@
       THROW_ERR(ERR_MSG_NEED_TO_OPEN_JACK_CLIENT); \
   }
 
-using namespace Napi;
-
 jack_client_t *client = 0;
 short client_active = 0;
 char client_name[STR_SIZE];
@@ -69,11 +70,46 @@ jack_port_t *playback_ports[MAX_PORTS];
 jack_default_audio_sample_t *capture_buf[MAX_PORTS];
 jack_default_audio_sample_t *playback_buf[MAX_PORTS];
 
+int check_port_connection(const char *src_port_name, const char *dst_port_name);
+bool check_port_exists(napi_env env, const char *check_port_name, unsigned long flags);
+void get_own_ports();
+napi_value get_ports(napi_env env, bool withOwn, unsigned long flags);
+void reset_own_ports_list();
+int jack_process(jack_nframes_t nframes, void *arg);
+
+bool hasProcessCallback = false; // TODO unbind process callback and check for memory leak
+bool hasCloseCallback = false;
+bool process = false;
+bool closing = false;
+uv_work_t *baton;
+uv_work_t *close_baton;
+static uv_sem_t semaphore;
+napi_value undefined;
+napi_ref processCallback;
+napi_env globalEnv;
+
+void uv_work_plug(uv_work_t *task)
+{
+}
+
+typedef struct
+{
+  napi_env env;
+  uv_work_t *req;
+  int status;
+} close_task_wrapper_data;
+
 napi_value getVersion(napi_env env, napi_callback_info info) // {{{1
 {
   napi_status status;
   napi_value result;
   status = napi_create_string_utf8(env, VERSION, NAPI_AUTO_LENGTH, &result);
+
+  if (status != napi_ok)
+  {
+    napi_throw_error(env, NULL, "Failed to create version string");
+  }
+
   return result;
 } // getVersion() }}}1
 
@@ -82,6 +118,12 @@ napi_value checkClientOpenedSync(napi_env env, napi_callback_info info) // {{{1
   napi_status status;
   napi_value result;
   status = napi_get_boolean(env, client != 0 && !closing, &result);
+
+  if (status != napi_ok)
+  {
+    napi_throw_error(env, NULL, "Failed to check client opened sync");
+  }
+
   return result;
 } // checkClientOpenedSync() }}}1
 
@@ -132,17 +174,32 @@ napi_value openClientSync(napi_env env, napi_callback_info info) // {{{1
 
   napi_value undefined;
   status = napi_get_undefined(env, &undefined);
+
+  if (status != napi_ok)
+  {
+    napi_throw_error(env, NULL, "Failed to open client sync");
+  }
+
   return undefined;
 } // openClientSync() }}}1
 
-#define UV_CLOSE_TASK_CLEANUP()                   \
-  {                                               \
-    status = napi_get_undefined(env, &undefined); \
-    delete task;                                  \
-    close_baton = NULL;                           \
-  }
+#define UV_CLOSE_TASK_EXCEPTION(msg)  \
+  do                                  \
+  {                                   \
+    napi_throw_error(env, NULL, msg); \
+    return;                           \
+  } while (0)
 
-void uv_close_task(napi_env env, uv_work_t *task, int status)
+#define UV_CLOSE_TASK_CLEANUP() \
+  do                            \
+  {                             \
+    delete task;                \
+    close_baton = NULL;         \
+  } while (0)
+
+void uv_close_task_wrapper(uv_work_t *req, int status);
+
+void uv_close_task(napi_env env, uv_work_t *task)
 {
   napi_handle_scope scope;
   napi_open_handle_scope(env, &scope);
@@ -150,34 +207,53 @@ void uv_close_task(napi_env env, uv_work_t *task, int status)
   if (baton)
   {
     UV_CLOSE_TASK_CLEANUP();
+
+    close_task_wrapper_data *wrapper_data = (close_task_wrapper_data *)malloc(sizeof(close_task_wrapper_data));
+    wrapper_data->env = env;
     close_baton = new uv_work_t();
-    uv_queue_work(uv_default_loop(), close_baton, uv_work_plug, uv_close_task);
+    wrapper_data->req = close_baton;
+    wrapper_data->status = 0;
+
+    close_baton->data = wrapper_data;
+    uv_queue_work(uv_default_loop(), close_baton, uv_work_plug, uv_close_task_wrapper);
     return;
   }
 
   if (client_active)
   {
     if (jack_deactivate(client) != 0)
+    {
       UV_CLOSE_TASK_EXCEPTION("Couldn't deactivate JACK-client");
+    }
 
     client_active = 0;
   }
 
   if (jack_client_close(client) != 0)
+  {
     UV_CLOSE_TASK_EXCEPTION("Couldn't close JACK-client");
+  }
 
   client = 0;
 
   closing = false;
-
-  napi_value undefined;
   delete task;
   close_baton = NULL;
 }
 
-napi_value closeClient(napi_env env, napi_callback_info info) // {{{1
+void uv_close_task_wrapper(uv_work_t *req, int status)
+{
+  close_task_wrapper_data *wrapper_data = (close_task_wrapper_data *)req->data;
+  uv_close_task(wrapper_data->env, req);
+
+  // Free the wrapper data once it's used
+  free(wrapper_data);
+}
+
+napi_value closeClient(napi_env env, napi_callback_info info)
 {
   napi_status status;
+  napi_ref closeCallback;
 
   if (closing)
   {
@@ -197,66 +273,102 @@ napi_value closeClient(napi_env env, napi_callback_info info) // {{{1
   napi_value argv[1];
   status = napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
 
-  if (napi_is_function(env, argv[0]))
+  napi_valuetype value_type;
+  status = napi_typeof(env, argv[0], &value_type);
+  if (value_type == napi_function)
   {
-    closeCallback = Persistent<Function>::New(napi_ref(argv[0]));
+    status = napi_create_reference(env, argv[0], 1, &closeCallback);
+    if (status != napi_ok)
+    {
+      napi_throw_error(env, NULL, "Failed to create reference for close callback");
+    }
     hasCloseCallback = true;
   }
 
   close_baton = new uv_work_t();
-  uv_queue_work(uv_default_loop(), close_baton, uv_work_plug, uv_close_task);
+  uv_queue_work(uv_default_loop(), close_baton, uv_work_plug, uv_close_task_wrapper);
 
   napi_value undefined;
   status = napi_get_undefined(env, &undefined);
-  return undefined;
-} // closeClient() }}}1
+  if (status != napi_ok)
+  {
+    napi_throw_error(env, NULL, "Failed to close client");
+  }
 
-Napi::Value registerInPortSync(const Napi::CallbackInfo &info)
+  return undefined;
+}
+
+napi_value registerInPortSync(napi_env env, napi_callback_info info)
 {
-  Napi::Env env = info.Env();
+  size_t argc = 1;
+  napi_value args[1];
+  napi_value jsthis;
+
+  napi_get_cb_info(env, info, &argc, args, &jsthis, NULL); // Get the argument values
+
   NEED_JACK_CLIENT_OPENED();
 
-  std::string port_name = info[0].As<Napi::String>();
+  char port_name_buffer[1024];
+  size_t length;
+  napi_get_value_string_utf8(env, args[0], port_name_buffer, sizeof(port_name_buffer), &length);
 
   capture_ports[own_in_ports_size] = jack_port_register(
       client,
-      port_name.c_str(),
+      port_name_buffer,
       JACK_DEFAULT_AUDIO_TYPE,
       JackPortIsInput,
       0);
 
   reset_own_ports_list();
 
-  return env.Undefined();
+  napi_value undefined;
+  napi_get_undefined(env, &undefined);
+  return undefined;
 }
 
-Napi::Value registerOutPortSync(const Napi::CallbackInfo &info)
+napi_value registerOutPortSync(napi_env env, napi_callback_info info)
 {
-  Napi::Env env = info.Env();
+  size_t argc = 1;
+  napi_value args[1];
+  napi_value jsthis;
+
+  napi_get_cb_info(env, info, &argc, args, &jsthis, NULL); // Get the argument values
+
   NEED_JACK_CLIENT_OPENED();
 
-  std::string port_name = info[0].As<Napi::String>();
+  char port_name_buffer[1024];
+  size_t length;
+  napi_get_value_string_utf8(env, args[0], port_name_buffer, sizeof(port_name_buffer), &length);
 
   playback_ports[own_out_ports_size] = jack_port_register(
       client,
-      port_name.c_str(),
+      port_name_buffer,
       JACK_DEFAULT_AUDIO_TYPE,
       JackPortIsOutput,
       0);
 
   reset_own_ports_list();
 
-  return env.Undefined();
+  napi_value undefined;
+  napi_get_undefined(env, &undefined);
+  return undefined;
 }
 
-Napi::Value unregisterPortSync(const Napi::CallbackInfo &info)
+napi_value unregisterPortSync(napi_env env, napi_callback_info info)
 {
-  Napi::Env env = info.Env();
+  size_t argc = 1;
+  napi_value args[1];
+  napi_value jsthis;
+
+  napi_get_cb_info(env, info, &argc, args, &jsthis, NULL); // Get the argument values
+
   NEED_JACK_CLIENT_OPENED();
 
-  std::string arg_port_name = info[0].As<Napi::String>();
+  char arg_port_name_buffer[1024];
+  size_t length;
+  napi_get_value_string_utf8(env, args[0], arg_port_name_buffer, sizeof(arg_port_name_buffer), &length);
+
   char full_port_name[STR_SIZE];
-  char *port_name = *arg_port_name;
 
   for (int i = 0, n = 0, m = 0;; i++, m++)
   {
@@ -275,14 +387,14 @@ Napi::Value unregisterPortSync(const Napi::CallbackInfo &info)
     }
     else
     {
-      if (port_name[m] == '\0')
+      if (arg_port_name_buffer[m] == '\0')
       {
         full_port_name[i] = '\0';
         break;
       }
       else
       {
-        full_port_name[i] = port_name[m];
+        full_port_name[i] = arg_port_name_buffer[m];
       }
     }
   }
@@ -290,215 +402,258 @@ Napi::Value unregisterPortSync(const Napi::CallbackInfo &info)
   jack_port_t *port = jack_port_by_name(client, full_port_name);
 
   if (jack_port_unregister(client, port) != 0)
-    THROW_ERR("Couldn't unregister JACK-port");
+  {
+    napi_throw_error(env, NULL, "Couldn't unregister JACK-port");
+  }
 
   reset_own_ports_list();
-
-  return env.Undefined();
-}
-
-Napi::Value checkActiveSync(const Napi::CallbackInfo &info)
-{
-  Napi::Env env = info.Env();
-  NEED_JACK_CLIENT_OPENED();
-
-  return Napi::Boolean::New(env, client_active > 0);
-}
-
-Napi::Value activateSync(const Napi::CallbackInfo &info)
-{
-  Napi::Env env = info.Env();
-  NEED_JACK_CLIENT_OPENED();
-
-  if (client_active)
-    THROW_ERR(env, "JACK-client already activated");
-
-  if (jack_activate(client) != 0)
-    THROW_ERR(env, "Couldn't activate JACK-client");
-
-  client_active = 1;
-
-  return env.Undefined();
-}
-
-Napi::Value deactivateSync(const Napi::CallbackInfo &info)
-{
-  Napi::Env env = info.Env();
-  NEED_JACK_CLIENT_OPENED();
-
-  if (!client_active)
-    THROW_ERR(env, "JACK-client is not active");
-
-  if (jack_deactivate(client) != 0)
-    THROW_ERR(env, "Couldn't deactivate JACK-client");
-
-  client_active = 0;
-
-  return env.Undefined();
-}
-
-Napi::Value connectPortSync(const Napi::CallbackInfo &info)
-{
-  Napi::Env env = info.Env();
-  NEED_JACK_CLIENT_OPENED();
-
-  if (!client_active)
-    THROW_ERR("JACK-client is not active");
-
-  String::AsciiValue src_port_name(args[0]->ToString());
-  jack_port_t *src_port = jack_port_by_name(client, *src_port_name);
-  if (!src_port)
-    THROW_ERR("Non existing source port");
-
-  String::AsciiValue dst_port_name(args[1]->ToString());
-  jack_port_t *dst_port = jack_port_by_name(client, *dst_port_name);
-  if (!dst_port)
-    THROW_ERR("Non existing destination port");
-
-  if (!client_active && (jack_port_is_mine(client, src_port) || jack_port_is_mine(client, dst_port)))
-  {
-    THROW_ERR("Jack client must be activated to connect own ports");
-  }
-
-  int error = jack_connect(client, *src_port_name, *dst_port_name);
-  if (error != 0 && error != EEXIST)
-    THROW_ERR("Failed to connect ports");
-
-  return env.Undefined();
-}
-
-Napi::Value disconnectPortSync(const Napi::CallbackInfo &info)
-{
-  Napi::Env env = info.Env();
-  NEED_JACK_CLIENT_OPENED();
-
-  if (!client_active)
-    THROW_ERR("JACK-client is not active");
-
-  String::AsciiValue src_port_name(args[0]->ToString());
-  jack_port_t *src_port = jack_port_by_name(client, *src_port_name);
-  if (!src_port)
-    THROW_ERR("Non existing source port");
-
-  String::AsciiValue dst_port_name(args[1]->ToString());
-  jack_port_t *dst_port = jack_port_by_name(client, *dst_port_name);
-  if (!dst_port)
-    THROW_ERR("Non existing destination port");
-
-  if (check_port_connection(*src_port_name, *dst_port_name))
-  {
-    if (jack_disconnect(client, *src_port_name, *dst_port_name))
-      THROW_ERR("Failed to disconnect ports");
-  }
-
-  return env.Undefined();
-}
-
-Napi::Value getAllPortsSync(const Napi::CallbackInfo &info)
-{
-  Napi::Env env = info.Env();
-  NEED_JACK_CLIENT_OPENED();
-
-  bool withOwn = true;
-  if (info.Length() > 0 && (info[0].IsBoolean() || info[0].IsNumber()))
-  {
-    withOwn = info[0].ToBoolean();
-  }
-
-  Napi::Array allPortsList = get_ports(env, withOwn, 0);
-
-  return allPortsList;
-}
-
-Napi::Value getOutPortsSync(const Napi::CallbackInfo &info)
-{
-  Napi::Env env = info.Env();
-  NEED_JACK_CLIENT_OPENED();
-
-  bool withOwn = true;
-  if (info.Length() > 0 && (info[0].IsBoolean() || info[0].IsNumber()))
-  {
-    withOwn = info[0].ToBoolean();
-  }
-
-  Napi::Array outPortsList = get_ports(env, withOwn, JackPortIsOutput);
-
-  return outPortsList;
-}
-
-Napi::Value getInPortsSync(const Napi::CallbackInfo &info)
-{
-  Napi::Env env = info.Env();
-  NEED_JACK_CLIENT_OPENED();
-
-  bool withOwn = true;
-  if (info.Length() > 0 && (info[0].IsBoolean() || info[0].IsNumber()))
-  {
-    withOwn = info[0].ToBoolean();
-  }
-
-  Napi::Array inPortsList = get_ports(env, withOwn, JackPortIsInput);
-
-  return inPortsList;
-}
-
-Napi::Value portExistsSync(const Napi::CallbackInfo &info)
-{
-  Napi::Env env = info.Env();
-  NEED_JACK_CLIENT_OPENED();
-
-  std::string checkPortName = info[0].As<Napi::String>();
-
-  return Napi::Boolean::New(env, check_port_exists(checkPortName.c_str(), 0));
-}
-
-Napi::Value outPortExistsSync(const Napi::CallbackInfo &info)
-{
-  Napi::Env env = info.Env();
-  NEED_JACK_CLIENT_OPENED();
-
-  std::string checkPortName = info[0].As<Napi::String>();
-
-  return Napi::Boolean::New(env, check_port_exists(checkPortName.c_str(), JackPortIsOutput));
-}
-
-Napi::Value inPortExistsSync(const Napi::CallbackInfo &info)
-{
-  Napi::Env env = info.Env();
-  NEED_JACK_CLIENT_OPENED();
-
-  std::string checkPortName = info[0].As<Napi::String>();
-
-  return Napi::Boolean::New(env, check_port_exists(checkPortName.c_str(), JackPortIsInput));
-}
-
-napi_value bindProcessSync(napi_env env, napi_callback_info info)
-{
-  NEED_JACK_CLIENT_OPENED();
-
-  size_t argc = 1;
-  napi_value args[1];
-  napi_value jsthis;
-
-  napi_get_cb_info(env, info, &argc, args, &jsthis, NULL); // Get the argument values
-
-  bool isFunction;
-  napi_is_function(env, args[0], &isFunction);
-
-  if (!isFunction)
-  {
-    napi_throw_type_error(env, NULL, "Callback argument must be a function");
-    napi_value undefined;
-    napi_get_undefined(env, &undefined);
-    return undefined;
-  }
-
-  processCallback = Napi::Persistent(args[0], env);
-  hasProcessCallback = true;
 
   napi_value undefined;
   napi_get_undefined(env, &undefined);
   return undefined;
+}
+
+napi_value checkActiveSync(napi_env env, napi_callback_info info)
+{
+  NEED_JACK_CLIENT_OPENED();
+
+  napi_value result;
+  napi_get_boolean(env, client_active > 0, &result);
+
+  return result;
+}
+
+napi_value activateSync(napi_env env, napi_callback_info info)
+{
+  NEED_JACK_CLIENT_OPENED();
+
+  if (client_active)
+    napi_throw_error(env, NULL, "JACK-client already activated");
+
+  if (jack_activate(client) != 0)
+    napi_throw_error(env, NULL, "Couldn't activate JACK-client");
+
+  client_active = 1;
+
+  napi_value undefined;
+  napi_get_undefined(env, &undefined);
+  return undefined;
+}
+
+napi_value deactivateSync(napi_env env, napi_callback_info info)
+{
+  NEED_JACK_CLIENT_OPENED();
+
+  if (!client_active)
+    napi_throw_error(env, NULL, "JACK-client is not active");
+
+  if (jack_deactivate(client) != 0)
+    napi_throw_error(env, NULL, "Couldn't deactivate JACK-client");
+
+  client_active = 0;
+
+  napi_value undefined;
+  napi_get_undefined(env, &undefined);
+  return undefined;
+}
+
+napi_value connectPortSync(napi_env env, napi_callback_info info)
+{
+  size_t argc = 2;
+  napi_value args[2];
+
+  napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+  NEED_JACK_CLIENT_OPENED();
+
+  if (!client_active)
+    napi_throw_error(env, NULL, "JACK-client is not active");
+
+  char src_port_name_buffer[1024];
+  size_t length;
+  napi_get_value_string_utf8(env, args[0], src_port_name_buffer, sizeof(src_port_name_buffer), &length);
+  jack_port_t *src_port = jack_port_by_name(client, src_port_name_buffer);
+  if (!src_port)
+    napi_throw_error(env, NULL, "Non existing source port");
+
+  char dst_port_name_buffer[1024];
+  napi_get_value_string_utf8(env, args[1], dst_port_name_buffer, sizeof(dst_port_name_buffer), &length);
+  jack_port_t *dst_port = jack_port_by_name(client, dst_port_name_buffer);
+  if (!dst_port)
+    napi_throw_error(env, NULL, "Non existing destination port");
+
+  if (!client_active && (jack_port_is_mine(client, src_port) || jack_port_is_mine(client, dst_port)))
+  {
+    napi_throw_error(env, NULL, "Jack client must be activated to connect own ports");
+  }
+
+  int error = jack_connect(client, src_port_name_buffer, dst_port_name_buffer);
+  if (error != 0 && error != EEXIST)
+    napi_throw_error(env, NULL, "Failed to connect ports");
+
+  napi_value undefined;
+  napi_get_undefined(env, &undefined);
+  return undefined;
+}
+
+napi_value disconnectPortSync(napi_env env, napi_callback_info info)
+{
+  size_t argc = 2;
+  napi_value args[2];
+
+  napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+  NEED_JACK_CLIENT_OPENED();
+
+  if (!client_active)
+    napi_throw_error(env, NULL, "JACK-client is not active");
+
+  char src_port_name_buffer[1024];
+  size_t length;
+  napi_get_value_string_utf8(env, args[0], src_port_name_buffer, sizeof(src_port_name_buffer), &length);
+  jack_port_t *src_port = jack_port_by_name(client, src_port_name_buffer);
+  if (!src_port)
+    napi_throw_error(env, NULL, "Non existing source port");
+
+  char dst_port_name_buffer[1024];
+  napi_get_value_string_utf8(env, args[1], dst_port_name_buffer, sizeof(dst_port_name_buffer), &length);
+  jack_port_t *dst_port = jack_port_by_name(client, dst_port_name_buffer);
+  if (!dst_port)
+    napi_throw_error(env, NULL, "Non existing destination port");
+
+  if (check_port_connection(src_port_name_buffer, dst_port_name_buffer))
+  {
+    if (jack_disconnect(client, src_port_name_buffer, dst_port_name_buffer))
+      napi_throw_error(env, NULL, "Failed to disconnect ports");
+  }
+
+  napi_value undefined;
+  napi_get_undefined(env, &undefined);
+  return undefined;
+}
+
+napi_value getAllPortsSync(napi_env env, napi_callback_info info)
+{
+  size_t argc = 1;
+  napi_value args[1];
+  bool withOwn = true;
+
+  napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+  NEED_JACK_CLIENT_OPENED();
+
+  if (argc > 0)
+  {
+    napi_valuetype type;
+    napi_typeof(env, args[0], &type);
+    if (type == napi_boolean || type == napi_number)
+    {
+      napi_get_value_bool(env, args[0], &withOwn);
+    }
+  }
+
+  napi_value allPortsList = get_ports(env, withOwn, 0);
+
+  return allPortsList;
+}
+
+napi_value getOutPortsSync(napi_env env, napi_callback_info info)
+{
+  size_t argc = 1;
+  napi_value args[1];
+  bool withOwn = true;
+
+  napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+  NEED_JACK_CLIENT_OPENED();
+
+  if (argc > 0)
+  {
+    napi_valuetype type;
+    napi_typeof(env, args[0], &type);
+    if (type == napi_boolean || type == napi_number)
+    {
+      napi_get_value_bool(env, args[0], &withOwn);
+    }
+  }
+
+  napi_value outPortsList = get_ports(env, withOwn, JackPortIsOutput);
+
+  return outPortsList;
+}
+
+napi_value getInPortsSync(napi_env env, napi_callback_info info)
+{
+  size_t argc = 1;
+  napi_value args[1];
+  bool withOwn = true;
+
+  napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+  NEED_JACK_CLIENT_OPENED();
+
+  if (argc > 0)
+  {
+    napi_valuetype type;
+    napi_typeof(env, args[0], &type);
+    if (type == napi_boolean || type == napi_number)
+    {
+      napi_get_value_bool(env, args[0], &withOwn);
+    }
+  }
+
+  napi_value inPortsList = get_ports(env, withOwn, JackPortIsInput);
+
+  return inPortsList;
+}
+
+napi_value portExistsSync(napi_env env, napi_callback_info info)
+{
+  size_t argc = 1;
+  napi_value args[1];
+
+  napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+  NEED_JACK_CLIENT_OPENED();
+
+  char checkPortName_buffer[1024];
+  size_t length;
+  napi_get_value_string_utf8(env, args[0], checkPortName_buffer, sizeof(checkPortName_buffer), &length);
+
+  napi_value result;
+  napi_get_boolean(env, check_port_exists(env, checkPortName_buffer, 0), &result);
+
+  return result;
+}
+
+napi_value outPortExistsSync(napi_env env, napi_callback_info info)
+{
+  size_t argc = 1;
+  napi_value args[1];
+
+  napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+  NEED_JACK_CLIENT_OPENED();
+
+  char checkPortName_buffer[1024];
+  size_t length;
+  napi_get_value_string_utf8(env, args[0], checkPortName_buffer, sizeof(checkPortName_buffer), &length);
+
+  napi_value result;
+  napi_get_boolean(env, check_port_exists(env, checkPortName_buffer, JackPortIsOutput), &result);
+
+  return result;
+}
+
+napi_value inPortExistsSync(napi_env env, napi_callback_info info)
+{
+  size_t argc = 1;
+  napi_value args[1];
+
+  napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+  NEED_JACK_CLIENT_OPENED();
+
+  char checkPortName_buffer[1024];
+  size_t length;
+  napi_get_value_string_utf8(env, args[0], checkPortName_buffer, sizeof(checkPortName_buffer), &length);
+
+  napi_value result;
+  napi_get_boolean(env, check_port_exists(env, checkPortName_buffer, JackPortIsInput), &result);
+
+  return result;
 }
 
 napi_value get_ports(napi_env env, bool withOwn, unsigned long flags)
@@ -540,25 +695,91 @@ napi_value get_ports(napi_env env, bool withOwn, unsigned long flags)
     }
   }
 
-  Napi::Array allPortsList;
+  // Create a new N-API array with the parsed_ports_count size
+  napi_value result_array;
+  napi_create_array_with_length(env, parsed_ports_count, &result_array);
+
+  unsigned int parsed_ports_index = 0;
+  for (unsigned int i = 0; i < ports_count; i++)
+  {
+    if (withOwn || strncmp(client_name, jack_ports_list[i], strlen(client_name)) != 0)
+    {
+      // Create a new N-API string for the current port
+      napi_value port_string;
+      napi_create_string_utf8(env, jack_ports_list[i], NAPI_AUTO_LENGTH, &port_string);
+
+      // Set the port_string to the result_array at the current parsed_ports_index
+      napi_set_element(env, result_array, parsed_ports_index, port_string);
+
+      parsed_ports_index++;
+    }
+  }
+
+  // Free the jack_ports_list when finished
+  jack_free(jack_ports_list);
+
+  return result_array;
+}
+
+napi_value bindProcessSync(napi_env env, napi_callback_info info)
+{
+  NEED_JACK_CLIENT_OPENED();
+
+  size_t argc = 1;
+  napi_value args[1];
+  napi_get_cb_info(env, info, &argc, args, NULL, NULL); // Get the argument values
+
+  napi_valuetype value_type;
+  napi_typeof(env, args[0], &value_type);
+
+  if (value_type != napi_function)
+  {
+    napi_throw_type_error(env, NULL, "Callback argument must be a function");
+    napi_value undefined;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+  }
+
+  napi_status status = napi_create_reference(env, args[0], 1, &processCallback);
+  if (status != napi_ok)
+  {
+    napi_throw_error(env, NULL, "Failed to create reference for process callback");
+  }
+  hasProcessCallback = true;
+
+  napi_value undefined;
+  napi_get_undefined(env, &undefined);
+  return undefined;
+}
+
+napi_value get_ports_helper(napi_env env, bool withOwn, const char *client_name, unsigned int ports_count, unsigned int parsed_ports_count, const char **jack_ports_list)
+{
+  napi_value allPortsList;
+  uint32_t idx;
   if (withOwn)
   {
-    allPortsList = Napi::Array::New(env, ports_count);
+    napi_create_array_with_length(env, ports_count, &allPortsList);
     for (unsigned int i = 0; i < ports_count; i++)
     {
-      allPortsList.Set(i, Napi::String::New(env, jack_ports_list[i]));
+      idx = i;
+      napi_value portName;
+      napi_create_string_utf8(env, jack_ports_list[i], NAPI_AUTO_LENGTH, &portName);
+      napi_set_element(env, allPortsList, idx, portName);
     }
   }
   else
   {
-    allPortsList = Napi::Array::New(env, parsed_ports_count);
+    napi_create_array_with_length(env, parsed_ports_count, &allPortsList);
     for (unsigned int i = 0; i < ports_count; i++)
     {
       for (unsigned int n = 0;; n++)
       {
         if (n >= STR_SIZE - 1)
         {
-          allPortsList.Set(i, Napi::String::New(env, jack_ports_list[i]));
+          idx = i;
+          napi_value portName;
+          napi_create_string_utf8(env, jack_ports_list[i], NAPI_AUTO_LENGTH, &portName);
+          napi_set_element(env, allPortsList, idx, portName);
           break;
         }
 
@@ -569,14 +790,16 @@ napi_value get_ports(napi_env env, bool withOwn, unsigned long flags)
 
         if (client_name[n] != jack_ports_list[i][n])
         {
-          allPortsList.Set(i, Napi::String::New(env, jack_ports_list[i]));
+          idx = i;
+          napi_value portName;
+          napi_create_string_utf8(env, jack_ports_list[i], NAPI_AUTO_LENGTH, &portName);
+          napi_set_element(env, allPortsList, idx, portName);
           break;
         }
       }
     }
   }
 
-  delete jack_ports_list;
   return allPortsList;
 }
 
@@ -759,31 +982,49 @@ int check_port_connection(const char *src_port_name, const char *dst_port_name) 
  * @example bool result = check_port_exists("system:playback_1", 0); // true
  * @example bool result = check_port_exists("system:playback_1", JackPortIsOutput); // false
  */
-bool check_port_exists(char *check_port_name, unsigned long flags) // {{{1
+bool check_port_exists(napi_env env, char *check_port_name, unsigned long flags) // {{{1
 {
-  Handle<Array> portsList = get_ports(true, flags);
-  for (uint8_t i = 0; i < portsList->Length(); i++)
-  {
-    String::AsciiValue port_name_arg(portsList->Get(i)->ToString());
-    char *port_name = *port_name_arg;
+  napi_value portsList = get_ports(env, true, flags);
+  uint32_t arrayLength;
+  napi_get_array_length(env, portsList, &arrayLength);
 
+  for (uint32_t i = 0; i < arrayLength; i++)
+  {
+    napi_value portNameValue;
+    napi_get_element(env, portsList, i, &portNameValue);
+
+    size_t bufSize;
+    napi_get_value_string_utf8(env, portNameValue, NULL, 0, &bufSize);
+    char *port_name = new char[bufSize + 1];
+    napi_get_value_string_utf8(env, portNameValue, port_name, bufSize + 1, NULL);
+
+    bool match = true;
     for (uint16_t n = 0;; n++)
     {
       if (port_name[n] == '\0' || check_port_name[n] == '\0' || n >= STR_SIZE - 1)
       {
         if (port_name[n] == check_port_name[n])
         {
+          delete[] port_name;
           return true;
         }
         else
         {
+          match = false;
           break;
         }
       }
       else if (port_name[n] != check_port_name[n])
       {
+        match = false;
         break;
       }
+    }
+
+    delete[] port_name;
+    if (!match)
+    {
+      continue;
     }
   }
   return false;
@@ -827,14 +1068,12 @@ int16_t get_own_out_port_index(char *short_port_name) // {{{1
 
 // processing {{{1
 
-#define UV_PROCESS_STOP()                \
-  {                                      \
-    napi_value undefined;                \
-    napi_get_undefined(env, &undefined); \
-    delete task;                         \
-    baton = NULL;                        \
-    uv_sem_post(&semaphore);             \
-    return undefined;                    \
+#define UV_PROCESS_STOP()    \
+  {                          \
+    delete task;             \
+    baton = NULL;            \
+    uv_sem_post(&semaphore); \
+    return;                  \
   }
 
 #define UV_PROCESS_EXCEPTION(err)                                          \
@@ -851,99 +1090,141 @@ int16_t get_own_out_port_index(char *short_port_name) // {{{1
 
 void uv_process(uv_work_t *task, int status) // {{{2
 {
-  HandleScope scope;
+  napi_env env = globalEnv;
+  uint16_t nframes;
+  memcpy(&nframes, &task->data, sizeof(nframes));
 
-  uint16_t nframes = *((uint16_t *)(&task->data));
-
-  Local<Object> capture = Object::New();
+  napi_value capture;
+  napi_create_object(env, &capture);
   for (uint8_t i = 0; i < own_in_ports_size; i++)
   {
-    Local<Array> portBuf = Array::New(nframes);
+    napi_value portBuf;
+    napi_create_array_with_length(env, nframes, &portBuf);
     for (uint16_t n = 0; n < nframes; n++)
     {
-      Local<Number> sample = Number::New(capture_buf[i][n]);
-      portBuf->Set(n, sample);
+      napi_value sample;
+      napi_create_double(env, capture_buf[i][n], &sample);
+      napi_set_element(env, portBuf, n, sample);
     }
-    capture->Set(
-        String::NewSymbol(own_in_ports_short_names[i]),
-        portBuf);
+    napi_set_named_property(env, capture, own_in_ports_short_names[i], portBuf);
   }
 
   const uint8_t argc = 3;
-  Local<Value> argv[argc] = {
-      Local<Value>::New(Null()),
-      Local<Number>::New(Number::New(nframes)),
-      Local<Object>::New(capture)};
-  Local<Value> retval =
-      processCallback->Call(Context::GetCurrent()->Global(), argc, argv);
+  napi_value argv[argc];
 
-  if (!retval->IsNull() && !retval->IsUndefined() && !retval->IsObject())
+  napi_value nullVal;
+  napi_get_null(env, &nullVal);
+  argv[0] = nullVal;
+
+  napi_value nframesVal;
+  napi_create_uint32(env, nframes, &nframesVal);
+  argv[1] = nframesVal;
+
+  argv[2] = capture;
+
+  napi_value retval;
+  napi_value global;
+  napi_get_global(env, &global);
+  napi_value processCallbackValue;
+  napi_get_reference_value(env, processCallback, &processCallbackValue);
+
+  napi_call_function(env, global, processCallbackValue, argc, argv, &retval);
+
+  napi_valuetype retval_type;
+  napi_typeof(env, retval, &retval_type);
+
+  if (retval_type != napi_null && retval_type != napi_undefined && retval_type != napi_object)
   {
-    UV_PROCESS_EXCEPTION(
-        Exception::TypeError(String::New(
-            "Returned value of \"process\" callback must be an object"
-            " of port{String}:buffer{Array.<Number|Float>} values"
-            " or null or undefined")));
+    // Throw Type Error
+    napi_throw_type_error(env, NULL, "Returned value of \"process\" callback must be an object of port{String}:buffer{Array.<Number|Float>} values or null or undefined");
+    return;
   }
 
-  if (retval->IsObject())
+  if (retval_type == napi_object)
   {
-    Local<Object> obj = retval.As<Object>();
-    Local<Array> keys = obj->GetOwnPropertyNames();
-    for (uint16_t i = 0; i < keys->Length(); i++)
-    {
-      Local<Value> key = keys->Get(i);
-      if (!key->IsString())
-      {
-        UV_PROCESS_EXCEPTION(
-            Exception::TypeError(String::New(
-                "Incorrect key type in returned value of \"process\""
-                " callback, must be a string (own port name)")));
-      }
-      String::AsciiValue port_name(key->ToString());
+    napi_value keys;
+    napi_get_property_names(env, retval, &keys);
 
-      int16_t port_index = get_own_out_port_index(*port_name);
+    uint32_t keys_length;
+    napi_get_array_length(env, keys, &keys_length);
+
+    for (uint16_t i = 0; i < keys_length; i++)
+    {
+
+      napi_value key;
+      napi_get_element(env, keys, i, &key);
+
+      napi_valuetype key_type;
+      napi_typeof(env, key, &key_type);
+
+      if (key_type != napi_string)
+      {
+        // Throw Type Error
+        napi_throw_type_error(env, NULL, "Incorrect key type in returned value of \"process\" callback, must be a string (own port name)");
+        return;
+      }
+
+      char port_name[STR_SIZE];
+      size_t port_name_size;
+      napi_get_value_string_utf8(env, key, port_name, STR_SIZE, &port_name_size);
+
+      int16_t port_index = get_own_out_port_index(port_name);
       if (port_index == -1)
       {
         char err[] = "Port \"%s\" not found";
         char err_msg[STR_SIZE + sizeof(err)];
-        sprintf(err_msg, err, *port_name);
-        UV_PROCESS_EXCEPTION(Exception::Error(String::New(err_msg)));
+        sprintf(err_msg, err, port_name);
+        napi_throw_error(env, NULL, err_msg);
+        return;
       }
 
-      Local<Value> val = obj->Get(key);
-      if (!val->IsArray())
-      {
-        UV_PROCESS_EXCEPTION(
-            Exception::TypeError(String::New(
-                "Incorrect buffer type of returned value of \"process\""
-                " callback, must be an Array<Float|Number>")));
-      }
-      Local<Array> buffer = val.As<Array>();
+      napi_value val;
+      napi_get_named_property(env, retval, port_name, &val);
 
-      if (buffer->Length() != nframes)
+      napi_valuetype val_type;
+      napi_typeof(env, val, &val_type);
+
+      if (val_type != napi_object)
       {
-        UV_PROCESS_EXCEPTION(
-            Exception::RangeError(String::New(
-                "Incorrect buffer size of returned value"
-                " of \"process\" callback")));
+        // Throw Type Error
+        napi_throw_type_error(env, NULL, "Incorrect buffer type of returned value of \"process\" callback, must be an Array<Float|Number>");
+        return;
+      }
+
+      napi_value buffer = val;
+
+      uint32_t buffer_length;
+      napi_get_array_length(env, buffer, &buffer_length);
+
+      if (buffer_length != nframes)
+      {
+        // Throw Range Error
+        napi_throw_range_error(env, NULL, "Incorrect buffer size of returned value of \"process\" callback");
+        return;
       }
 
       for (uint16_t sample_i = 0; sample_i < nframes; sample_i++)
       {
-        Local<Value> sample = buffer->Get(sample_i);
-        if (!sample->IsNumber())
+        napi_value sample;
+        napi_get_element(env, buffer, sample_i, &sample);
+
+        napi_valuetype sample_type;
+        napi_typeof(env, sample, &sample_type);
+
+        if (sample_type != napi_number)
         {
-          UV_PROCESS_EXCEPTION(
-              Exception::TypeError(String::New(
-                  "Incorrect sample type of returned value"
-                  " of \"process\" callback"
-                  ", must be a {Number|Float}")));
+          // Throw Type Error
+          napi_throw_type_error(env, NULL, "Incorrect sample type of returned value of \"process\" callback, must be a {Number|Float}");
+          return;
         }
-        playback_buf[port_index][sample_i] = sample->ToNumber()->Value();
+
+        double sample_value;
+        napi_get_value_double(env, sample, &sample_value);
+
+        playback_buf[port_index][sample_i] = sample_value;
       }
     } // for (ports)
-  }   // if we has something to output from callback
+  }   // if we have something to output from callback
 
   UV_PROCESS_STOP();
 } // uv_process() }}}2
@@ -981,8 +1262,8 @@ int jack_process(jack_nframes_t nframes, void *arg) // {{{2
         jack_port_get_buffer(playback_ports[i], nframes);
   }
 
-  baton->data = (void *)(uint16_t)nframes;
-  uv_queue_work(uv_default_loop(), baton, uv_work_plug, uv_process);
+  baton->data = (void *)(uintptr_t)nframes;
+  uv_queue_work(uv_default_loop(), baton, uv_work_plug, (uv_after_work_cb)uv_process);
   uv_sem_wait(&semaphore);
   uv_sem_destroy(&semaphore);
 
@@ -1009,6 +1290,11 @@ napi_value getSampleRateSync(napi_env env, napi_callback_info info) // {{{1
   double sampleRate = jack_get_sample_rate(client);
   napi_value val;
   status = napi_create_double(env, sampleRate, &val);
+  if (status != napi_ok)
+  {
+    napi_throw_error(env, NULL, "Failed to get sample rate sync");
+  }
+
   return val;
 } // getSampleRateSync() }}}1
 
@@ -1019,6 +1305,11 @@ napi_value getBufferSizeSync(napi_env env, napi_callback_info info) // {{{1
   double bufferSize = jack_get_buffer_size(client);
   napi_value val;
   status = napi_create_double(env, bufferSize, &val);
+  if (status != napi_ok)
+  {
+    napi_throw_error(env, NULL, "Failed to get Buffer Size Sync");
+  }
+
   return val;
 } // getBufferSizeSync() }}}1
 
@@ -1030,6 +1321,7 @@ napi_value getBufferSizeSync(napi_env env, napi_callback_info info) // {{{1
 napi_value Init(napi_env env, napi_value exports) // {{{1
 {
   napi_status status;
+  globalEnv = env;
 
   napi_property_descriptor descriptors[] = {
       DECLARE_NAPI_METHOD("getVersion", getVersion),
