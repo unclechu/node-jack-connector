@@ -472,25 +472,36 @@ Napi::Value inPortExistsSync(const Napi::CallbackInfo &info)
   return Napi::Boolean::New(env, check_port_exists(checkPortName.c_str(), JackPortIsInput));
 }
 
-Napi::Value bindProcessSync(const Napi::CallbackInfo &info)
+napi_value bindProcessSync(napi_env env, napi_callback_info info)
 {
-  Napi::Env env = info.Env();
   NEED_JACK_CLIENT_OPENED();
 
-  if (!info[0].IsFunction())
+  size_t argc = 1;
+  napi_value args[1];
+  napi_value jsthis;
+
+  napi_get_cb_info(env, info, &argc, args, &jsthis, NULL); // Get the argument values
+
+  bool isFunction;
+  napi_is_function(env, args[0], &isFunction);
+
+  if (!isFunction)
   {
-    Napi::TypeError::New(env, "Callback argument must be a function").ThrowAsJavaScriptException();
-    return env.Undefined();
+    napi_throw_type_error(env, NULL, "Callback argument must be a function");
+    napi_value undefined;
+    napi_get_undefined(env, &undefined);
+    return undefined;
   }
 
-  Napi::Function callback = info[0].As<Napi::Function>();
-  processCallback = Napi::Persistent(callback);
+  processCallback = Napi::Persistent(args[0], env);
   hasProcessCallback = true;
 
-  return env.Undefined();
+  napi_value undefined;
+  napi_get_undefined(env, &undefined);
+  return undefined;
 }
 
-Napi::Array get_ports(const Napi::Env &env, bool withOwn, unsigned long flags)
+napi_value get_ports(napi_env env, bool withOwn, unsigned long flags)
 {
   unsigned int ports_count = 0;
   const char **jack_ports_list;
